@@ -1,0 +1,103 @@
+package com.emfield.visualizer.rendering
+
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import kotlin.math.abs
+
+/**
+ * Handles touch gestures for 3D camera control
+ * - Single finger drag: Rotate camera
+ * - Two finger pinch: Zoom camera
+ * - Two finger drag: Pan camera
+ */
+class CameraController(
+    private val glRenderer: GLRenderer
+) {
+    
+    private var lastX = 0f
+    private var lastY = 0f
+    private var pointerCount = 0
+    
+    private var scaleGestureDetector: ScaleGestureDetector? = null
+    
+    fun setupScaleGestureDetector(context: android.content.Context) {
+        scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val scaleFactor = detector.scaleFactor
+                val zoomDelta = (1f - scaleFactor) * 100f
+                glRenderer.zoomCamera(zoomDelta)
+                return true
+            }
+        })
+    }
+    
+    fun handleTouchEvent(event: MotionEvent): Boolean {
+        // Let scale detector handle pinch zoom first
+        scaleGestureDetector?.onTouchEvent(event)
+        
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastX = event.x
+                lastY = event.y
+                pointerCount = 1
+                return true
+            }
+            
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                pointerCount = event.pointerCount
+                if (pointerCount == 2) {
+                    // Two finger touch - prepare for pan
+                    lastX = (event.getX(0) + event.getX(1)) / 2f
+                    lastY = (event.getY(0) + event.getY(1)) / 2f
+                }
+                return true
+            }
+            
+            MotionEvent.ACTION_MOVE -> {
+                if (pointerCount == 1) {
+                    // Single finger - rotate camera
+                    val deltaX = event.x - lastX
+                    val deltaY = event.y - lastY
+                    
+                    if (abs(deltaX) > 1f || abs(deltaY) > 1f) {
+                        glRenderer.rotateCamera(deltaX, deltaY)
+                    }
+                    
+                    lastX = event.x
+                    lastY = event.y
+                } else if (pointerCount == 2 && event.pointerCount == 2) {
+                    // Two fingers - pan camera
+                    val currentX = (event.getX(0) + event.getX(1)) / 2f
+                    val currentY = (event.getY(0) + event.getY(1)) / 2f
+                    
+                    val deltaX = currentX - lastX
+                    val deltaY = currentY - lastY
+                    
+                    glRenderer.panCamera(-deltaX, deltaY)
+                    
+                    lastX = currentX
+                    lastY = currentY
+                }
+                return true
+            }
+            
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                pointerCount = event.pointerCount - 1
+                if (pointerCount == 1 && event.pointerCount == 2) {
+                    // One finger lifted, remaining finger becomes new reference
+                    val remainingIndex = if (event.actionIndex == 0) 1 else 0
+                    lastX = event.getX(remainingIndex)
+                    lastY = event.getY(remainingIndex)
+                }
+                return true
+            }
+            
+            MotionEvent.ACTION_CANCEL -> {
+                pointerCount = 0
+                return true
+            }
+        }
+        
+        return false
+    }
+}

@@ -1,0 +1,4 @@
+# ninja log v5
+10	558	7994525574310625	CMakeFiles/emfield_native.dir/kalman_filter.cpp.o	df20b8414f15cdab
+0	701	7994525575747484	CMakeFiles/emfield_native.dir/sensor_native.cpp.o	bae6da9cfcd91dd5
+701	859	7994525577252543	C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/build/intermediates/cxx/Debug/2p6552u5/obj/x86/libemfield_native.so	27de5c0b96cc4b35

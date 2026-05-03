@@ -1,0 +1,12 @@
+[
+{
+  "directory": "C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/.cxx/Debug/2p6552u5/x86",
+  "command": "C:\\Users\\tharu\\AppData\\Local\\Android\\Sdk\\ndk\\25.1.8937393\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=i686-none-linux-android26 --sysroot=C:/Users/tharu/AppData/Local/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Demfield_native_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -fPIC -std=c++17 -o CMakeFiles\\emfield_native.dir\\sensor_native.cpp.o -c C:\\Users\\tharu\\EM_Visualizer\\EMFieldVisualizer\\app\\src\\main\\cpp\\sensor_native.cpp",
+  "file": "C:\\Users\\tharu\\EM_Visualizer\\EMFieldVisualizer\\app\\src\\main\\cpp\\sensor_native.cpp"
+},
+{
+  "directory": "C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/.cxx/Debug/2p6552u5/x86",
+  "command": "C:\\Users\\tharu\\AppData\\Local\\Android\\Sdk\\ndk\\25.1.8937393\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=i686-none-linux-android26 --sysroot=C:/Users/tharu/AppData/Local/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Demfield_native_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -fPIC -std=c++17 -o CMakeFiles\\emfield_native.dir\\kalman_filter.cpp.o -c C:\\Users\\tharu\\EM_Visualizer\\EMFieldVisualizer\\app\\src\\main\\cpp\\kalman_filter.cpp",
+  "file": "C:\\Users\\tharu\\EM_Visualizer\\EMFieldVisualizer\\app\\src\\main\\cpp\\kalman_filter.cpp"
+}
+]

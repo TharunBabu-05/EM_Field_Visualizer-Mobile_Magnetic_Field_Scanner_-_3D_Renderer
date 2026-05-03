@@ -1,0 +1,62 @@
+[
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\navigation_nav_graph.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\navigation\\nav_graph.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\drawable_spacing_divider.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\drawable\\spacing_divider.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\xml_file_paths.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\xml\\file_paths.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\drawable_ic_settings.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\drawable\\ic_settings.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\menu_bottom_nav_menu.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\menu\\bottom_nav_menu.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\menu_top_menu.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\menu\\top_menu.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\layout_fragment_visualization.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\fragment_visualization.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\layout_fragment_scan.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\fragment_scan.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\layout_activity_main.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\activity_main.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\drawable_ic_launcher_foreground.xml.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\drawable\\ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\raw_particle_vertex_shader.glsl.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\raw\\particle_vertex_shader.glsl"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\raw_particle_fragment_shader.glsl.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\raw\\particle_fragment_shader.glsl"
+    },
+    {
+        "merged": "com.emfield.visualizer.app-merged_res-48:/layout_fragment_visualization.xml.flat",
+        "source": "com.emfield.visualizer.app-main-50:/layout/fragment_visualization.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\raw_vertex_shader.glsl.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\raw\\vertex_shader.glsl"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-merged_res-48:\\raw_fragment_shader.glsl.flat",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\raw\\fragment_shader.glsl"
+    }
+]

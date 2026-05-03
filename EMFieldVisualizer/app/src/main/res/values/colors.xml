@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#2196F3</color>
+    <color name="primary_dark">#1976D2</color>
+    <color name="primary_light">#BBDEFB</color>
+    <color name="accent">#FF5722</color>
+    <color name="accent_dark">#E64A19</color>
+    <color name="accent_light">#FFCCBC</color>
+    
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="background">#121212</color>
+    <color name="surface">#1E1E1E</color>
+    
+    <!-- Additional colors for Material Design 3 -->
+    <color name="primary_color">#2196F3</color>
+    <color name="primary_color_translucent">#B32196F3</color>
+    <color name="bottom_nav_color">#1E1E1E</color>
+    <color name="text_secondary">#B3FFFFFF</color>
+    <color name="divider_color">#33FFFFFF</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="surface_variant">#2C2C2C</color>
+    
+    <!-- Field strength colors -->
+    <color name="field_weak">#4CAF50</color>
+    <color name="field_medium">#FFC107</color>
+    <color name="field_strong">#F44336</color>
+</resources>

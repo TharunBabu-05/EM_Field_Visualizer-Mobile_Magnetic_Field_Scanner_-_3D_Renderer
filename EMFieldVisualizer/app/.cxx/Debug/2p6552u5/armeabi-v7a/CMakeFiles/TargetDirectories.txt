@@ -1,0 +1,3 @@
+C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/.cxx/Debug/2p6552u5/armeabi-v7a/CMakeFiles/emfield_native.dir
+C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/.cxx/Debug/2p6552u5/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/tharu/EM_Visualizer/EMFieldVisualizer/app/.cxx/Debug/2p6552u5/armeabi-v7a/CMakeFiles/rebuild_cache.dir

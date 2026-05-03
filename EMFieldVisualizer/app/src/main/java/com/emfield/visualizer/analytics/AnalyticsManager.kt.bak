@@ -1,0 +1,561 @@
+package com.emfield.visualizer.analytics
+
+import android.content.Context
+import android.util.Log
+import com.emfield.visualizer.data.MagneticFieldData
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import org.json.JSONObject
+import java.util.concurrent.ConcurrentLinkedQueue
+
+/**
+ * Unified analytics manager for production readiness
+ * Integrates performance monitoring, crash reporting, and user analytics
+ */
+class AnalyticsManager(
+    private val context: Context
+) {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    
+    // Analytics components
+    private val performanceMonitor = PerformanceMonitor(context)
+    private val crashReporter = CrashReporter(context)
+    
+    // Event tracking
+    private val eventQueue = ConcurrentLinkedQueue<AnalyticsEvent>()
+    private val userBehaviorQueue = ConcurrentLinkedQueue<UserBehaviorEvent>()
+    
+    // Analytics flows
+    private val _analyticsState = MutableStateFlow<AnalyticsState>(AnalyticsState.INITIALIZING)
+    val analyticsState: StateFlow<AnalyticsState> = _analyticsState.asStateFlow()
+    
+    private val _analyticsSummary = MutableStateFlow<AnalyticsSummary?>(null)
+    val analyticsSummary: StateFlow<AnalyticsSummary?> = _analyticsSummary.asStateFlow()
+    
+    // Configuration
+    private var analyticsEnabled = true
+    private var batchSize = 50
+    private var uploadInterval = 30000L // 30 seconds
+    
+    init {
+        initializeAnalytics()
+    }
+    
+    private fun initializeAnalytics() {
+        try {
+            // Start performance monitoring
+            performanceMonitor.startMonitoring()
+            
+            // Setup event collection
+            setupEventCollection()
+            
+            // Start periodic upload
+            startPeriodicUpload()
+            
+            _analyticsState.value = AnalyticsState.READY
+            Log.i(TAG, "Analytics manager initialized successfully")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize analytics", e)
+            _analyticsState.value = AnalyticsState.ERROR
+        }
+    }
+    
+    private fun setupEventCollection() {
+        // Collect performance alerts
+        scope.launch {
+            performanceMonitor.performanceAlerts.collect { alert ->
+                trackEvent("performance_alert", mapOf(
+                    "type" to alert.type.name,
+                    "severity" to alert.severity.name,
+                    "message" to alert.message,
+                    "value" to alert.value,
+                    "threshold" to alert.threshold
+                ))
+            }
+        }
+        
+        // Collect crash reports
+        scope.launch {
+            crashReporter.crashReports.collect { crash ->
+                trackEvent("crash_report", mapOf(
+                    "id" to crash.id,
+                    "exception_type" to crash.exceptionType,
+                    "thread_name" to crash.threadName,
+                    "is_fatal" to crash.isFatal
+                ))
+            }
+        }
+        
+        // Collect ANR reports
+        scope.launch {
+            crashReporter.anrReports.collect { anr ->
+                trackEvent("anr_report", mapOf(
+                    "id" to anr.id,
+                    "activity_name" to anr.activityName,
+                    "duration" to anr.duration
+                ))
+            }
+        }
+    }
+    
+    private fun startPeriodicUpload() {
+        scope.launch {
+            while (isActive) {
+                delay(uploadInterval)
+                
+                if (analyticsEnabled) {
+                    uploadAnalyticsData()
+                }
+            }
+        }
+    }
+    
+    /**
+     * Track a custom analytics event
+     */
+    fun trackEvent(eventName: String, parameters: Map<String, Any> = emptyMap()) {
+        if (!analyticsEnabled) return
+        
+        val event = AnalyticsEvent(
+            id = generateEventId(),
+            name = eventName,
+            parameters = parameters,
+            timestamp = System.currentTimeMillis(),
+            sessionId = getCurrentSessionId()
+        )
+        
+        eventQueue.offer(event)
+        
+        // Auto-upload for critical events
+        if (eventName.startsWith("crash_") || eventName.startsWith("anr_")) {
+            scope.launch {
+                uploadEvent(event)
+            }
+        }
+    }
+    
+    /**
+     * Track user behavior
+     */
+    fun trackUserBehavior(action: String, context: Map<String, Any> = emptyMap()) {
+        if (!analyticsEnabled) return
+        
+        val behavior = UserBehaviorEvent(
+            id = generateEventId(),
+            action = action,
+            context = context,
+            timestamp = System.currentTimeMillis(),
+            sessionId = getCurrentSessionId(),
+            userId = getCurrentUserId()
+        )
+        
+        userBehaviorQueue.offer(behavior)
+    }
+    
+    /**
+     * Track sensor performance
+     */
+    fun trackSensorPerformance(data: MagneticFieldData, processingTime: Long) {
+        trackEvent("sensor_performance", mapOf(
+            "field_strength" to data.magnitude(),
+            "accuracy" to data.accuracy,
+            "processing_time" to processingTime,
+            "timestamp" to data.timestamp
+        ))
+        
+        // Record performance metrics
+        performanceMonitor.recordSensorLatency(processingTime)
+    }
+    
+    /**
+     * Track UI interaction
+     */
+    fun trackUiInteraction(element: String, action: String, context: Map<String, Any> = emptyMap()) {
+        trackUserBehavior("ui_interaction", context + mapOf(
+            "element" to element,
+            "action" to action
+        ))
+    }
+    
+    /**
+     * Track visualization mode change
+     */
+    fun trackVisualizationModeChange(fromMode: String, toMode: String) {
+        trackUserBehavior("visualization_mode_change", mapOf(
+            "from_mode" to fromMode,
+            "to_mode" toMode
+        ))
+    }
+    
+    /**
+     * Track calibration event
+     */
+    fun trackCalibrationEvent(eventType: String, quality: Float, duration: Long) {
+        trackEvent("calibration", mapOf(
+            "type" to eventType,
+            "quality" to quality,
+            "duration" to duration
+        ))
+    }
+    
+    /**
+     * Track data export
+     */
+    fun trackDataExport(format: String, dataSize: Long, success: Boolean) {
+        trackEvent("data_export", mapOf(
+            "format" to format,
+            "data_size" to dataSize,
+            "success" to success
+        ))
+    }
+    
+    /**
+     * Record frame render time for performance monitoring
+     */
+    fun recordFrameTime(frameTimeMs: Long) {
+        performanceMonitor.recordFrameTime(frameTimeMs)
+    }
+    
+    /**
+     * Report a non-fatal error
+     */
+    fun reportNonFatalError(
+        errorType: String,
+        message: String,
+        stackTrace: String,
+        context: Map<String, Any> = emptyMap()
+    ) {
+        crashReporter.reportNonFatalError(errorType, message, stackTrace, context)
+        trackEvent("non_fatal_error", mapOf(
+            "error_type" to errorType,
+            "message" to message
+        ) + context)
+    }
+    
+    /**
+     * Get current analytics summary
+     */
+    fun getAnalyticsSummary(): AnalyticsSummary {
+        val performanceSummary = performanceMonitor.getPerformanceSummary()
+        val crashStatistics = crashReporter.getCrashStatistics()
+        
+        return AnalyticsSummary(
+            sessionDuration = System.currentTimeMillis() - getSessionStartTime(),
+            eventsTracked = eventQueue.size + userBehaviorQueue.size,
+            performanceSummary = performanceSummary,
+            crashStatistics = crashStatistics,
+            memoryUsage = performanceSummary.averageMemory,
+            cpuUsage = performanceSummary.averageCpu,
+            batteryLevel = getBatteryLevel()
+        )
+    }
+    
+    private fun uploadAnalyticsData() {
+        val events = mutableListOf<AnalyticsEvent>()
+        val behaviors = mutableListOf<UserBehaviorEvent>()
+        
+        // Collect events
+        repeat(batchSize) {
+            val event = eventQueue.poll()
+            if (event != null) events.add(event) else return@repeat
+        }
+        
+        // Collect behaviors
+        repeat(batchSize) {
+            val behavior = userBehaviorQueue.poll()
+            if (behavior != null) behaviors.add(behavior) else return@repeat
+        }
+        
+        if (events.isNotEmpty() || behaviors.isNotEmpty()) {
+            scope.launch {
+                uploadEventsAndBehaviors(events, behaviors)
+            }
+        }
+    }
+    
+    private suspend fun uploadEventsAndBehaviors(
+        events: List<AnalyticsEvent>,
+        behaviors: List<UserBehaviorEvent>
+    ) {
+        try {
+            val payload = JSONObject().apply {
+                put("events", JSONArray(events.map { it.toJson() }))
+                put("behaviors", JSONArray(behaviors.map { it.toJson() }))
+                put("device_info", getDeviceInfoJson())
+                put("session_info", getSessionInfoJson())
+            }
+            
+            // In production, would send to analytics service
+            Log.d(TAG, "Uploading ${events.size} events and ${behaviors.size} behaviors")
+            
+            // Simulate network request
+            delay(1000)
+            
+            // Update summary
+            _analyticsSummary.value = getAnalyticsSummary()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to upload analytics data", e)
+        }
+    }
+    
+    private suspend fun uploadEvent(event: AnalyticsEvent) {
+        try {
+            val payload = JSONObject().apply {
+                put("event", event.toJson())
+                put("device_info", getDeviceInfoJson())
+                put("session_info", getSessionInfoJson())
+            }
+            
+            // In production, would send to analytics service
+            Log.d(TAG, "Uploading critical event: ${event.name}")
+            
+            // Simulate network request
+            delay(500)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to upload event: ${event.name}", e)
+        }
+    }
+    
+    private fun generateEventId(): String {
+        return "event_${System.currentTimeMillis()}_${(Math.random() * 10000).toInt()}"
+    }
+    
+    private fun getCurrentSessionId(): String {
+        return preferences.getString("session_id", generateSessionId()).also { sessionId ->
+            if (sessionId == null) {
+                val newSessionId = generateSessionId()
+                preferences.edit().putString("session_id", newSessionId).apply()
+                newSessionId
+            } else {
+                sessionId
+            }
+        }
+    }
+    
+    private fun generateSessionId(): String {
+        return "session_${System.currentTimeMillis()}_${(Math.random() * 10000).toInt()}"
+    }
+    
+    private fun getCurrentUserId(): String {
+        return preferences.getString("user_id", "anonymous_user").also { userId ->
+            if (userId == null) {
+                val newUserId = "user_${System.currentTimeMillis()}_${(Math.random() * 10000).toInt()}"
+                preferences.edit().putString("user_id", newUserId).apply()
+                newUserId
+            } else {
+                userId
+            }
+        }
+    }
+    
+    private fun getSessionStartTime(): Long {
+        return preferences.getLong("session_start_time", System.currentTimeMillis()).also { startTime ->
+            if (startTime == 0L) {
+                val newStartTime = System.currentTimeMillis()
+                preferences.edit().putLong("session_start_time", newStartTime).apply()
+                newStartTime
+            } else {
+                startTime
+            }
+        }
+    }
+    
+    private fun getDeviceInfoJson(): JSONObject {
+        return JSONObject().apply {
+            put("manufacturer", android.os.Build.MANUFACTURER)
+            put("model", android.os.Build.MODEL)
+            put("android_version", android.os.Build.VERSION.RELEASE)
+            put("sdk_version", android.os.Build.VERSION.SDK_INT)
+            put("app_version", getAppVersion())
+        }
+    }
+    
+    private fun getSessionInfoJson(): JSONObject {
+        return JSONObject().apply {
+            put("session_id", getCurrentSessionId())
+            put("user_id", getCurrentUserId())
+            put("session_start", getSessionStartTime())
+            put("session_duration", System.currentTimeMillis() - getSessionStartTime())
+        }
+    }
+    
+    private fun getAppVersion(): String {
+        return try {
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            packageInfo.versionName ?: "Unknown"
+        } catch (e: Exception) {
+            "Unknown"
+        }
+    }
+    
+    private fun getBatteryLevel(): Float {
+        return try {
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+            batteryManager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) / 100f
+        } catch (e: Exception) {
+            0f
+        }
+    }
+    
+    private val preferences = context.getSharedPreferences("analytics_prefs", Context.MODE_PRIVATE)
+    
+    /**
+     * Configure analytics settings
+     */
+    fun configure(config: AnalyticsConfig) {
+        analyticsEnabled = config.enabled
+        batchSize = config.batchSize
+        uploadInterval = config.uploadInterval
+        
+        // Configure components
+        performanceMonitor.updateThresholds(config.performanceThresholds)
+        crashReporter.configure(config.crashReportingConfig)
+        
+        preferences.edit().apply {
+            putBoolean("analytics_enabled", analyticsEnabled)
+            putInt("batch_size", batchSize)
+            putLong("upload_interval", uploadInterval)
+            apply()
+        }
+        
+        Log.i(TAG, "Analytics configuration updated")
+    }
+    
+    /**
+     * Get performance monitor for direct access
+     */
+    fun getPerformanceMonitor(): PerformanceMonitor = performanceMonitor
+    
+    /**
+     * Get crash reporter for direct access
+     */
+    fun getCrashReporter(): CrashReporter = crashReporter
+    
+    /**
+     * Export all analytics data
+     */
+    suspend fun exportAnalyticsData(): String = withContext(Dispatchers.IO) {
+        return@withContext buildString {
+            appendLine("Analytics Data Export")
+            appendLine("=====================")
+            appendLine("Export Time: ${java.util.Date()}")
+            appendLine()
+            
+            val summary = getAnalyticsSummary()
+            appendLine("Session Summary:")
+            appendLine("  Session Duration: ${summary.sessionDuration} ms")
+            appendLine("  Events Tracked: ${summary.eventsTracked}")
+            appendLine("  Battery Level: ${summary.batteryLevel * 100}%")
+            appendLine()
+            
+            appendLine("Performance Summary:")
+            appendLine("  Average FPS: ${summary.performanceSummary.averageFps}")
+            appendLine("  Worst FPS: ${summary.performanceSummary.worstFps}")
+            appendLine("  Average Memory: ${summary.performanceSummary.averageMemory / 1024 / 1024} MB")
+            appendLine("  Peak Memory: ${summary.performanceSummary.peakMemory / 1024 / 1024} MB")
+            appendLine("  Average CPU: ${summary.performanceSummary.averageCpu}%")
+            appendLine("  Dropped Frames: ${summary.performanceSummary.totalDroppedFrames}")
+            appendLine()
+            
+            appendLine("Crash Statistics:")
+            appendLine("  Total Crashes: ${summary.crashStatistics.totalCrashes}")
+            appendLine("  Total ANRs: ${summary.crashStatistics.totalAnrs}")
+            appendLine("  Recent Crashes: ${summary.crashStatistics.recentCrashes}")
+            appendLine("  Recent ANRs: ${summary.crashStatistics.recentAnrs}")
+            appendLine("  Most Common Crash: ${summary.crashStatistics.mostCommonCrash ?: "None"}")
+            appendLine()
+            
+            appendLine("Performance Metrics:")
+            appendLine(performanceMonitor.exportPerformanceData())
+            appendLine()
+            
+            appendLine("Device Information:")
+            appendLine("  Manufacturer: ${android.os.Build.MANUFACTURER}")
+            appendLine("  Model: ${android.os.Build.MODEL}")
+            appendLine("  Android Version: ${android.os.Build.VERSION.RELEASE}")
+            appendLine("  API Level: ${android.os.Build.VERSION.SDK_INT}")
+            appendLine("  App Version: ${getAppVersion()}")
+        }
+    }
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        performanceMonitor.stopMonitoring()
+        crashReporter.cleanup()
+        scope.cancel()
+        Log.i(TAG, "Analytics manager cleaned up")
+    }
+    
+    companion object {
+        private const val TAG = "AnalyticsManager"
+    }
+}
+
+// Data classes for analytics
+data class AnalyticsEvent(
+    val id: String,
+    val name: String,
+    val parameters: Map<String, Any>,
+    val timestamp: Long,
+    val sessionId: String
+) {
+    fun toJson(): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("name", name)
+            put("parameters", JSONObject(parameters))
+            put("timestamp", timestamp)
+            put("session_id", sessionId)
+        }
+    }
+}
+
+data class UserBehaviorEvent(
+    val id: String,
+    val action: String,
+    val context: Map<String, Any>,
+    val timestamp: Long,
+    val sessionId: String,
+    val userId: String
+) {
+    fun toJson(): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("action", action)
+            put("context", JSONObject(context))
+            put("timestamp", timestamp)
+            put("session_id", sessionId)
+            put("user_id", userId)
+        }
+    }
+}
+
+data class AnalyticsSummary(
+    val sessionDuration: Long,
+    val eventsTracked: Int,
+    val performanceSummary: com.emfield.visualizer.analytics.PerformanceSummary,
+    val crashStatistics: com.emfield.visualizer.analytics.CrashStatistics,
+    val memoryUsage: Long,
+    val cpuUsage: Float,
+    val batteryLevel: Float
+)
+
+data class AnalyticsConfig(
+    val enabled: Boolean,
+    val batchSize: Int,
+    val uploadInterval: Long,
+    val performanceThresholds: com.emfield.visualizer.analytics.PerformanceThresholds,
+    val crashReportingConfig: com.emfield.visualizer.analytics.CrashReportingConfig
+)
+
+enum class AnalyticsState {
+    INITIALIZING,
+    READY,
+    ERROR,
+    DISABLED
+}

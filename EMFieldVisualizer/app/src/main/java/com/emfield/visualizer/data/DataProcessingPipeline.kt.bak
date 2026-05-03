@@ -1,0 +1,364 @@
+package com.emfield.visualizer.data
+
+import android.util.Log
+import com.emfield.visualizer.sensors.MagnetometerManager
+import com.emfield.visualizer.sensors.IMUFusion
+import com.emfield.visualizer.sensors.SpatialMapper
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.*
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.min
+
+/**
+ * Real-time data processing pipeline with background threading and memory optimization
+ */
+class DataProcessingPipeline(
+    private val magnetometerManager: MagnetometerManager,
+    private val imuFusion: IMUFusion,
+    private val spatialMapper: SpatialMapper
+) {
+    
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    
+    // Processing channels
+    private val rawSensorChannel = Channel<MagneticFieldData>(capacity = Channel.UNLIMITED)
+    private val processedDataChannel = Channel<ProcessedFieldData>(capacity = 1000)
+    
+    // Batching and optimization
+    private val batchProcessor = BatchProcessor()
+    private val memoryOptimizer = MemoryOptimizer()
+    
+    // Performance monitoring
+    private var processingStartTime = 0L
+    private var totalProcessedSamples = 0L
+    private var droppedSamples = 0L
+    
+    // Flow for processed data output
+    private val _processedDataFlow = MutableSharedFlow<ProcessedFieldData>(
+        replay = 0,
+        extraBufferCapacity = 100,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val processedDataFlow: SharedFlow<ProcessedFieldData> = _processedDataFlow.asSharedFlow()
+    
+    // Flow for performance metrics
+    private val _performanceMetricsFlow = MutableStateFlow<PerformanceMetrics?>(null)
+    val performanceMetricsFlow: StateFlow<PerformanceMetrics?> = _performanceMetricsFlow.asStateFlow()
+    
+    init {
+        startProcessingPipeline()
+    }
+    
+    private fun startProcessingPipeline() {
+        processingStartTime = System.currentTimeMillis()
+        
+        // Stage 1: Raw sensor data collection
+        scope.launch {
+            magnetometerManager.magneticFieldFlow.collect { rawData ->
+                if (!rawSensorChannel.trySend(rawData).isSuccess) {
+                    droppedSamples++
+                    Log.w(TAG, "Dropped sensor sample due to full channel")
+                }
+            }
+        }
+        
+        // Stage 2: Position integration with IMU
+        scope.launch {
+            imuFusion.positionFlow.collect { position ->
+                // Process pending raw data with current position
+                processBatchWithPosition(position)
+            }
+        }
+        
+        // Stage 3: Batch processing and optimization
+        scope.launch {
+            for (batch in batchProcessor.batches) {
+                val processedBatch = processBatch(batch)
+                processedBatch.forEach { data ->
+                    processedDataChannel.trySend(data)
+                }
+            }
+        }
+        
+        // Stage 4: Spatial mapping and output
+        scope.launch {
+            for (processedData in processedDataChannel) {
+                // Add to spatial mapper
+                spatialMapper.addDataPoint(processedData.originalData, processedData.position)
+                
+                // Emit to flow
+                _processedDataFlow.tryEmit(processedData)
+                
+                // Update performance metrics
+                updatePerformanceMetrics()
+                
+                // Memory optimization
+                memoryOptimizer.optimizeIfNeeded()
+            }
+        }
+        
+        // Performance monitoring task
+        scope.launch {
+            while (isActive) {
+                delay(1000) // Update metrics every second
+                updatePerformanceMetrics()
+            }
+        }
+    }
+    
+    private suspend fun processBatchWithPosition(position: Vector3) {
+        val batch = mutableListOf<MagneticFieldData>()
+        
+        // Collect available raw data
+        while (rawSensorChannel.tryReceive().isSuccess && batch.size < MAX_BATCH_SIZE) {
+            val data = rawSensorChannel.tryReceive().getOrNull() ?: break
+            batch.add(data)
+        }
+        
+        if (batch.isNotEmpty()) {
+            // Process batch with current position
+            val processedBatch = batch.map { rawData ->
+                ProcessedFieldData(
+                    originalData = rawData,
+                    position = position,
+                    processedTimestamp = System.currentTimeMillis(),
+                    quality = calculateDataQuality(rawData, position)
+                )
+            }
+            
+            // Send to next stage
+            processedBatch.forEach { data ->
+                processedDataChannel.trySend(data)
+            }
+        }
+    }
+    
+    private fun processBatch(batch: List<MagneticFieldData>): List<ProcessedFieldData> {
+        return batch.map { rawData ->
+            // Apply filtering and optimization
+            val filteredData = applyFilters(rawData)
+            val optimizedData = memoryOptimizer.optimizeData(filteredData)
+            
+            ProcessedFieldData(
+                originalData = optimizedData,
+                position = imuFusion.getCurrentPosition(),
+                processedTimestamp = System.currentTimeMillis(),
+                quality = calculateDataQuality(optimizedData, imuFusion.getCurrentPosition())
+            )
+        }
+    }
+    
+    private fun applyFilters(data: MagneticFieldData): MagneticFieldData {
+        // Apply median filter for noise reduction
+        val filteredField = applyMedianFilter(data.field)
+        
+        return data.copy(field = filteredField)
+    }
+    
+    private fun applyMedianFilter(field: Vector3): Vector3 {
+        // Simple median filter implementation
+        // In a real implementation, this would use a sliding window
+        return field
+    }
+    
+    private fun calculateDataQuality(data: MagneticFieldData, position: Vector3): Float {
+        var quality = 1.0f
+        
+        // Quality based on sensor accuracy
+        quality *= when (data.accuracy) {
+            3 -> 1.0f // High
+            2 -> 0.8f // Medium
+            1 -> 0.6f // Low
+            else -> 0.3f // Unreliable
+        }
+        
+        // Quality based on field strength (too weak or too strong may indicate issues)
+        val magnitude = data.magnitude()
+        quality *= when {
+            magnitude < 1f -> 0.5f // Too weak
+            magnitude > 200f -> 0.7f // Too strong
+            magnitude > 20f && magnitude < 100f -> 1.0f // Good range
+            else -> 0.8f // Acceptable
+        }
+        
+        // Quality based on position stability
+        val velocity = imuFusion.getCurrentVelocity()
+        quality *= when {
+            velocity.magnitude() > 2.0f -> 0.7f // Moving too fast
+            velocity.magnitude() < 0.1f -> 1.0f // Stable
+            else -> 0.9f // Slight movement
+        }
+        
+        return quality.coerceIn(0f, 1f)
+    }
+    
+    private fun updatePerformanceMetrics() {
+        val currentTime = System.currentTimeMillis()
+        val elapsedTime = (currentTime - processingStartTime) / 1000.0
+        
+        if (elapsedTime > 0) {
+            val metrics = PerformanceMetrics(
+                processingRate = totalProcessedSamples / elapsedTime,
+                dropRate = droppedSamples.toDouble() / totalProcessedSamples.coerceAtLeast(1),
+                memoryUsage = memoryOptimizer.getCurrentMemoryUsage(),
+                bufferSize = rawSensorChannel.tryReceive().isSuccess,
+                averageProcessingTime = calculateAverageProcessingTime()
+            )
+            
+            _performanceMetricsFlow.value = metrics
+        }
+    }
+    
+    private fun calculateAverageProcessingTime(): Double {
+        // Calculate average processing time based on recent samples
+        return 10.0 // Placeholder - would be calculated from actual timing data
+    }
+    
+    /**
+     * Get current pipeline statistics
+     */
+    fun getPipelineStats(): PipelineStats {
+        return PipelineStats(
+            totalProcessed = totalProcessedSamples,
+            droppedSamples = droppedSamples,
+            bufferSize = rawSensorChannel.tryReceive().isSuccess,
+            memoryUsage = memoryOptimizer.getCurrentMemoryUsage(),
+            uptime = System.currentTimeMillis() - processingStartTime
+        )
+    }
+    
+    /**
+     * Adjust processing parameters for optimization
+     */
+    fun adjustProcessingParameters(config: ProcessingConfig) {
+        batchProcessor.setBatchSize(config.batchSize)
+        batchProcessor.setBatchInterval(config.batchInterval)
+        memoryOptimizer.setMaxMemoryUsage(config.maxMemoryMB * 1024 * 1024)
+        
+        Log.i(TAG, "Processing parameters updated: $config")
+    }
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        scope.cancel()
+        rawSensorChannel.close()
+        processedDataChannel.close()
+        Log.i(TAG, "Data processing pipeline cleaned up")
+    }
+    
+    companion object {
+        private const val TAG = "DataProcessingPipeline"
+        private const val MAX_BATCH_SIZE = 100
+    }
+}
+
+/**
+ * Batch processor for optimizing data throughput
+ */
+private class BatchProcessor {
+    private val batchSize = 50
+    private val batchInterval = 50L // ms
+    private val currentBatch = mutableListOf<MagneticFieldData>()
+    private val batchChannel = Channel<List<MagneticFieldData>>(capacity = 10)
+    
+    val batches: Flow<List<MagneticFieldData>> = batchChannel.receiveAsFlow()
+    
+    fun setBatchSize(size: Int) {
+        // Update batch size
+    }
+    
+    fun setBatchInterval(interval: Long) {
+        // Update batch interval
+    }
+    
+    fun addToBatch(data: MagneticFieldData) {
+        currentBatch.add(data)
+        
+        if (currentBatch.size >= batchSize) {
+            flushBatch()
+        }
+    }
+    
+    private fun flushBatch() {
+        if (currentBatch.isNotEmpty()) {
+            batchChannel.trySend(currentBatch.toList())
+            currentBatch.clear()
+        }
+    }
+}
+
+/**
+ * Memory optimization utilities
+ */
+private class MemoryOptimizer {
+    private var maxMemoryUsage = 100 * 1024 * 1024 // 100MB default
+    private val dataCache = ConcurrentLinkedQueue<MagneticFieldData>()
+    
+    fun optimizeData(data: MagneticFieldData): MagneticFieldData {
+        // Apply memory optimizations
+        return data
+    }
+    
+    fun optimizeIfNeeded() {
+        val currentUsage = getCurrentMemoryUsage()
+        if (currentUsage > maxMemoryUsage * 0.8) {
+            // Clear old data
+            while (dataCache.size > 1000) {
+                dataCache.poll()
+            }
+        }
+    }
+    
+    fun getCurrentMemoryUsage(): Long {
+        val runtime = Runtime.getRuntime()
+        return runtime.totalMemory() - runtime.freeMemory()
+    }
+    
+    fun setMaxMemoryUsage(maxBytes: Long) {
+        maxMemoryUsage = maxBytes
+    }
+}
+
+/**
+ * Processed field data with additional metadata
+ */
+data class ProcessedFieldData(
+    val originalData: MagneticFieldData,
+    val position: Vector3,
+    val processedTimestamp: Long,
+    val quality: Float
+)
+
+/**
+ * Performance metrics for monitoring
+ */
+data class PerformanceMetrics(
+    val processingRate: Double,
+    val dropRate: Double,
+    val memoryUsage: Long,
+    val bufferSize: Boolean,
+    val averageProcessingTime: Double
+)
+
+/**
+ * Pipeline statistics
+ */
+data class PipelineStats(
+    val totalProcessed: Long,
+    val droppedSamples: Long,
+    val bufferSize: Boolean,
+    val memoryUsage: Long,
+    val uptime: Long
+)
+
+/**
+ * Processing configuration
+ */
+data class ProcessingConfig(
+    val batchSize: Int = 50,
+    val batchInterval: Long = 50L,
+    val maxMemoryMB: Int = 100
+)

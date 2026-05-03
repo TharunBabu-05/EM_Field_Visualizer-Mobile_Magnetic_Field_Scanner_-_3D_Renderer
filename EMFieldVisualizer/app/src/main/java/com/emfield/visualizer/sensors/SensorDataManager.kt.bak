@@ -1,0 +1,354 @@
+package com.emfield.visualizer.sensors
+
+import android.content.Context
+import android.util.Log
+import com.emfield.visualizer.data.DataProcessingPipeline
+import com.emfield.visualizer.data.MagneticFieldData
+import com.emfield.visualizer.data.ProcessedFieldData
+import com.emfield.visualizer.data.ProcessingConfig
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+/**
+ * High-level sensor data manager that coordinates all sensors and processing
+ */
+class SensorDataManager(
+    private val context: Context
+) {
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    
+    // Sensor managers
+    private val magnetometerManager = MagnetometerManager(context)
+    private val imuFusion = IMUFusion(context)
+    private val spatialMapper = SpatialMapper()
+    
+    // Data processing pipeline
+    private lateinit var dataProcessingPipeline: DataProcessingPipeline
+    
+    // State flows
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+    
+    private val _currentFieldStrength = MutableStateFlow(0f)
+    val currentFieldStrength: StateFlow<Float> = _currentFieldStrength.asStateFlow()
+    
+    private val _dataPointCount = MutableStateFlow(0)
+    val dataPointCount: StateFlow<Int> = _dataPointCount.asStateFlow()
+    
+    // Combined processed data flow
+    val processedDataFlow: SharedFlow<ProcessedFieldData>
+        get() = if (::dataProcessingPipeline.isInitialized) {
+            dataProcessingPipeline.processedDataFlow
+        } else {
+            MutableSharedFlow(replay = 0, extraBufferCapacity = 0).asSharedFlow()
+        }
+    
+    // Performance metrics
+    val performanceMetricsFlow: StateFlow<com.emfield.visualizer.data.PerformanceMetrics?>
+        get() = if (::dataProcessingPipeline.isInitialized) {
+            dataProcessingPipeline.performanceMetricsFlow
+        } else {
+            MutableStateFlow(null).asStateFlow()
+        }
+    
+    // Sensor status
+    private val _sensorStatus = MutableStateFlow<SensorStatus>(SensorStatus.INITIALIZING)
+    val sensorStatus: StateFlow<SensorStatus> = _sensorStatus.asStateFlow()
+    
+    init {
+        initializeSensors()
+    }
+    
+    private fun initializeSensors() {
+        scope.launch {
+            try {
+                // Check sensor availability
+                if (!magnetometerManager.isSensorAvailable()) {
+                    _sensorStatus.value = SensorStatus.MAGNETOMETER_UNAVAILABLE
+                    return@launch
+                }
+                
+                if (!imuFusion.areSensorsAvailable()) {
+                    _sensorStatus.value = SensorStatus.IMU_UNAVAILABLE
+                    return@launch
+                }
+                
+                // Initialize processing pipeline
+                dataProcessingPipeline = DataProcessingPipeline(
+                    magnetometerManager,
+                    imuFusion,
+                    spatialMapper
+                )
+                
+                // Setup data flow monitoring
+                setupDataMonitoring()
+                
+                _sensorStatus.value = SensorStatus.READY
+                Log.i(TAG, "Sensor data manager initialized successfully")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize sensors: ${e.message}", e)
+                _sensorStatus.value = SensorStatus.ERROR
+            }
+        }
+    }
+    
+    private fun setupDataMonitoring() {
+        scope.launch {
+            // Monitor processed data for UI updates
+            dataProcessingPipeline.processedDataFlow.collect { processedData ->
+                _currentFieldStrength.value = processedData.originalData.magnitude()
+                _dataPointCount.value = spatialMapper.dataPointCount.value
+            }
+        }
+        
+        scope.launch {
+            // Monitor performance metrics
+            dataProcessingPipeline.performanceMetricsFlow.collect { metrics ->
+                if (metrics != null) {
+                    // Adjust processing parameters based on performance
+                    adjustPerformanceBasedOnMetrics(metrics)
+                }
+            }
+        }
+    }
+    
+    private fun adjustPerformanceBasedOnMetrics(
+        metrics: com.emfield.visualizer.data.PerformanceMetrics
+    ) {
+        scope.launch {
+            when {
+                metrics.dropRate > 0.1 -> {
+                    // Too many drops, increase batch size
+                    Log.w(TAG, "High drop rate detected: ${metrics.dropRate}")
+                    dataProcessingPipeline.adjustProcessingParameters(
+                        ProcessingConfig(
+                            batchSize = 100,
+                            batchInterval = 25L,
+                            maxMemoryMB = 150
+                        )
+                    )
+                }
+                
+                metrics.memoryUsage > 100 * 1024 * 1024 -> {
+                    // High memory usage, reduce batch size
+                    Log.w(TAG, "High memory usage detected: ${metrics.memoryUsage / 1024 / 1024}MB")
+                    dataProcessingPipeline.adjustProcessingParameters(
+                        ProcessingConfig(
+                            batchSize = 25,
+                            batchInterval = 100L,
+                            maxMemoryMB = 80
+                        )
+                    )
+                }
+                
+                metrics.processingRate < 50 -> {
+                    // Low processing rate, optimize for speed
+                    Log.w(TAG, "Low processing rate detected: ${metrics.processingRate}Hz")
+                    magnetometerManager.setHighFrequencyMode(true)
+                    magnetometerManager.setTargetSamplingRate(200f)
+                }
+            }
+        }
+    }
+    
+    /**
+     * Start scanning for magnetic field data
+     */
+    fun startScanning(): Boolean {
+        if (_isScanning.value) {
+            Log.w(TAG, "Already scanning")
+            return true
+        }
+        
+        if (_sensorStatus.value != SensorStatus.READY) {
+            Log.e(TAG, "Sensors not ready: ${_sensorStatus.value}")
+            return false
+        }
+        
+        scope.launch {
+            try {
+                // Start magnetometer
+                val magnetometerStarted = magnetometerManager.start()
+                if (!magnetometerStarted) {
+                    _sensorStatus.value = SensorStatus.MAGNETOMETER_ERROR
+                    return@launch
+                }
+                
+                // Start IMU fusion
+                val imuStarted = imuFusion.start()
+                if (!imuStarted) {
+                    magnetometerManager.stop()
+                    _sensorStatus.value = SensorStatus.IMU_ERROR
+                    return@launch
+                }
+                
+                _isScanning.value = true
+                _sensorStatus.value = SensorStatus.SCANNING
+                Log.i(TAG, "Scanning started successfully")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start scanning: ${e.message}", e)
+                stopScanning()
+                _sensorStatus.value = SensorStatus.ERROR
+            }
+        }
+        
+        return true
+    }
+    
+    /**
+     * Stop scanning
+     */
+    fun stopScanning() {
+        if (!_isScanning.value) return
+        
+        scope.launch {
+            try {
+                magnetometerManager.stop()
+                imuFusion.stop()
+                _isScanning.value = false
+                _sensorStatus.value = SensorStatus.READY
+                Log.i(TAG, "Scanning stopped")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping scanning: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
+     * Reset all sensors and clear data
+     */
+    fun reset() {
+        scope.launch {
+            stopScanning()
+            
+            // Clear spatial data
+            spatialMapper.clear()
+            
+            // Reset IMU
+            imuFusion.reset()
+            
+            // Reset counters
+            _currentFieldStrength.value = 0f
+            _dataPointCount.value = 0
+            
+            Log.i(TAG, "Sensor data manager reset")
+        }
+    }
+    
+    /**
+     * Get current statistics
+     */
+    fun getStatistics(): SensorStatistics {
+        val spatialStats = spatialMapper.getStatistics()
+        val pipelineStats = if (::dataProcessingPipeline.isInitialized) {
+            dataProcessingPipeline.getPipelineStats()
+        } else {
+            com.emfield.visualizer.data.PipelineStats(0, 0, false, 0, 0)
+        }
+        
+        return SensorStatistics(
+            isScanning = _isScanning.value,
+            currentFieldStrength = _currentFieldStrength.value,
+            dataPointCount = _dataPointCount.value,
+            spatialStatistics = spatialStats,
+            pipelineStats = pipelineStats,
+            sensorStatus = _sensorStatus.value,
+            magnetometerInfo = magnetometerManager.getSensorInfo(),
+            samplingRate = magnetometerManager.getSamplingRate()
+        )
+    }
+    
+    /**
+     * Configure sensor settings
+     */
+    fun configureSensorSettings(config: SensorConfig) {
+        magnetometerManager.setHighFrequencyMode(config.highFrequencyMode)
+        magnetometerManager.setTargetSamplingRate(config.targetSamplingRate)
+        magnetometerManager.setAdaptiveSampling(config.adaptiveSampling)
+        
+        if (::dataProcessingPipeline.isInitialized) {
+            dataProcessingPipeline.adjustProcessingParameters(
+                ProcessingConfig(
+                    batchSize = config.batchSize,
+                    batchInterval = config.batchInterval,
+                    maxMemoryMB = config.maxMemoryMB
+                )
+            )
+        }
+        
+        Log.i(TAG, "Sensor settings configured: $config")
+    }
+    
+    /**
+     * Get spatial mapper for direct access
+     */
+    fun getSpatialMapper(): SpatialMapper = spatialMapper
+    
+    /**
+     * Get all collected data points
+     */
+    fun getAllDataPoints(): List<MagneticFieldData> = spatialMapper.getAllDataPoints()
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        scope.cancel()
+        stopScanning()
+        
+        if (::dataProcessingPipeline.isInitialized) {
+            dataProcessingPipeline.cleanup()
+        }
+        
+        magnetometerManager.cleanup()
+        imuFusion.cleanup()
+        
+        Log.i(TAG, "Sensor data manager cleaned up")
+    }
+    
+    companion object {
+        private const val TAG = "SensorDataManager"
+    }
+}
+
+/**
+ * Sensor status enumeration
+ */
+enum class SensorStatus {
+    INITIALIZING,
+    READY,
+    SCANNING,
+    MAGNETOMETER_UNAVAILABLE,
+    IMU_UNAVAILABLE,
+    MAGNETOMETER_ERROR,
+    IMU_ERROR,
+    ERROR
+}
+
+/**
+ * Sensor configuration
+ */
+data class SensorConfig(
+    val highFrequencyMode: Boolean = true,
+    val targetSamplingRate: Float = 200f,
+    val adaptiveSampling: Boolean = true,
+    val batchSize: Int = 50,
+    val batchInterval: Long = 50L,
+    val maxMemoryMB: Int = 100
+)
+
+/**
+ * Comprehensive sensor statistics
+ */
+data class SensorStatistics(
+    val isScanning: Boolean,
+    val currentFieldStrength: Float,
+    val dataPointCount: Int,
+    val spatialStatistics: com.emfield.visualizer.data.SpatialStatistics,
+    val pipelineStats: com.emfield.visualizer.data.PipelineStats,
+    val sensorStatus: SensorStatus,
+    val magnetometerInfo: String,
+    val samplingRate: Float
+)

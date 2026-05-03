@@ -1,0 +1,2 @@
+ninja: Entering directory `C:\Users\tharu\EM_Visualizer\EMFieldVisualizer\app\.cxx\Debug\2p6552u5\x86_64'
+ninja: no work to do.

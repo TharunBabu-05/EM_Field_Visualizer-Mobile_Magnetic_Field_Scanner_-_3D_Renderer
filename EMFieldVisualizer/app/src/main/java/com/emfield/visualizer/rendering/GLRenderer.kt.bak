@@ -1,0 +1,294 @@
+package com.emfield.visualizer.rendering
+
+import android.content.Context
+import android.opengl.GLES30
+import android.opengl.GLSurfaceView
+import android.opengl.Matrix
+import android.util.Log
+import com.emfield.visualizer.R
+import com.emfield.visualizer.data.MagneticFieldData
+import com.emfield.visualizer.data.Vector3
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
+
+/**
+ * OpenGL ES 3.0 Renderer for 3D field visualization
+ * Handles camera, lighting, and rendering pipeline
+ */
+class GLRenderer(
+    private val context: Context
+) : GLSurfaceView.Renderer {
+    
+    // Matrices
+    private val projectionMatrix = FloatArray(16)
+    private val viewMatrix = FloatArray(16)
+    private val modelMatrix = FloatArray(16)
+    private val mvpMatrix = FloatArray(16)
+    private val tempMatrix = FloatArray(16)
+    
+    // Camera parameters
+    private var cameraDistance = 5f
+    private var cameraRotationX = 30f
+    private var cameraRotationY = 45f
+    private var cameraPosition = Vector3(0f, 0f, 5f)
+    private var cameraTarget = Vector3.ZERO
+    
+    // Rendering components
+    private var vectorFieldRenderer: VectorFieldRenderer? = null
+    private var particleRenderer: ParticleRenderer? = null
+    private var gridRenderer: GridRenderer? = null
+    private var heatmapRenderer: HeatmapRenderer? = null
+    
+    // Data
+    private var dataPoints = listOf<MagneticFieldData>()
+    
+    // Visualization mode
+    private var visualizationMode = VisualizationMode.VECTORS
+    var showGrid = true
+    
+    // Light position
+    private val lightPos = floatArrayOf(5f, 5f, 5f)
+    
+    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        // Enable depth testing
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthFunc(GLES30.GL_LESS)
+        
+        // Enable blending for transparency
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        
+        // Enable face culling
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        GLES30.glCullFace(GLES30.GL_BACK)
+        
+        // Set clear color (dark background)
+        GLES30.glClearColor(0.1f, 0.1f, 0.15f, 1f)
+        
+        // Initialize renderers
+        try {
+            vectorFieldRenderer = VectorFieldRenderer(context)
+            particleRenderer = ParticleRenderer(context)
+            gridRenderer = GridRenderer(context)
+            heatmapRenderer = HeatmapRenderer(context)
+            
+            Log.i(TAG, "OpenGL ES initialized successfully")
+            Log.i(TAG, "OpenGL Version: ${GLES30.glGetString(GLES30.GL_VERSION)}")
+            Log.i(TAG, "GLSL Version: ${GLES30.glGetString(GLES30.GL_SHADING_LANGUAGE_VERSION)}")
+            Log.i(TAG, "Renderer: ${GLES30.glGetString(GLES30.GL_RENDERER)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize renderers: ${e.message}", e)
+        }
+    }
+    
+    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        GLES30.glViewport(0, 0, width, height)
+        
+        // Calculate projection matrix
+        val ratio = width.toFloat() / height.toFloat()
+        Matrix.perspectiveM(projectionMatrix, 0, 45f, ratio, 0.1f, 100f)
+        
+        Log.i(TAG, "Surface size: ${width}x${height}")
+    }
+    
+    override fun onDrawFrame(gl: GL10?) {
+        // Clear buffers
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+        
+        // Update camera
+        updateCamera()
+        
+        // Calculate MVP matrix
+        Matrix.multiplyMM(tempMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
+        Matrix.setIdentityM(modelMatrix, 0)
+        Matrix.multiplyMM(mvpMatrix, 0, tempMatrix, 0, modelMatrix, 0)
+        
+        // Draw grid if enabled
+        if (showGrid) {
+            gridRenderer?.draw(mvpMatrix)
+        }
+        
+        // Draw based on visualization mode
+        when (visualizationMode) {
+            VisualizationMode.VECTORS -> {
+                vectorFieldRenderer?.draw(mvpMatrix, modelMatrix, dataPoints, lightPos, cameraPosition.toFloatArray())
+            }
+            VisualizationMode.HEATMAP -> {
+                val boundingBox = calculateBoundingBox(dataPoints)
+                heatmapRenderer?.draw(mvpMatrix, dataPoints, boundingBox)
+            }
+            VisualizationMode.PARTICLES -> {
+                particleRenderer?.draw(mvpMatrix, dataPoints)
+            }
+        }
+        
+        // Check for OpenGL errors
+        checkGLError("onDrawFrame")
+    }
+    
+    private fun updateCamera() {
+        // Calculate camera position based on rotation and distance
+        val radX = Math.toRadians(cameraRotationX.toDouble()).toFloat()
+        val radY = Math.toRadians(cameraRotationY.toDouble()).toFloat()
+        
+        cameraPosition = Vector3(
+            cameraDistance * kotlin.math.cos(radX) * kotlin.math.sin(radY),
+            cameraDistance * kotlin.math.sin(radX),
+            cameraDistance * kotlin.math.cos(radX) * kotlin.math.cos(radY)
+        )
+        
+        cameraPosition = cameraPosition + cameraTarget
+        
+        // Set up view matrix
+        Matrix.setLookAtM(
+            viewMatrix, 0,
+            cameraPosition.x, cameraPosition.y, cameraPosition.z,  // Eye position
+            cameraTarget.x, cameraTarget.y, cameraTarget.z,        // Look at
+            0f, 1f, 0f                                             // Up vector
+        )
+    }
+    
+    /**
+     * Update data points for rendering
+     */
+    fun updateData(data: List<MagneticFieldData>) {
+        dataPoints = data
+    }
+    
+    /**
+     * Rotate camera
+     */
+    fun rotateCamera(deltaX: Float, deltaY: Float) {
+        cameraRotationY += deltaX * 0.3f
+        cameraRotationX += deltaY * 0.3f
+        
+        // Clamp vertical rotation
+        cameraRotationX = cameraRotationX.coerceIn(-89f, 89f)
+    }
+    
+    /**
+     * Zoom camera
+     */
+    fun zoomCamera(delta: Float) {
+        cameraDistance *= (1f - delta * 0.01f)
+        cameraDistance = cameraDistance.coerceIn(1f, 20f)
+    }
+    
+    /**
+     * Pan camera
+     */
+    fun panCamera(deltaX: Float, deltaY: Float) {
+        val right = Vector3(1f, 0f, 0f)
+        val up = Vector3(0f, 1f, 0f)
+        
+        cameraTarget = cameraTarget + (right * deltaX * 0.01f) + (up * deltaY * 0.01f)
+    }
+    
+    /**
+     * Reset camera to default position
+     */
+    fun resetCamera() {
+        cameraDistance = 5f
+        cameraRotationX = 30f
+        cameraRotationY = 45f
+        cameraTarget = Vector3.ZERO
+    }
+    
+    /**
+     * Set visualization mode
+     */
+    fun setVisualizationMode(mode: VisualizationMode) {
+        visualizationMode = mode
+        Log.i(TAG, "Visualization mode: $mode")
+    }
+    
+    /**
+     * Get current visualization mode
+     */
+    fun getVisualizationMode(): VisualizationMode = visualizationMode
+    
+    /**
+     * Toggle grid visibility
+     */
+    fun setGridVisible(visible: Boolean) {
+        showGrid = visible
+    }
+    
+    /**
+     * Update particle animation
+     */
+    fun updateParticles(deltaTime: Float) {
+        particleRenderer?.update(deltaTime)
+    }
+    
+    /**
+     * Calculate bounding box for data points
+     */
+    private fun calculateBoundingBox(dataPoints: List<MagneticFieldData>): Pair<Vector3, Vector3>? {
+        if (dataPoints.isEmpty()) return null
+        
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var minZ = Float.MAX_VALUE
+        var maxX = Float.MIN_VALUE
+        var maxY = Float.MIN_VALUE
+        var maxZ = Float.MIN_VALUE
+        
+        for (point in dataPoints) {
+            minX = minOf(minX, point.position.x)
+            minY = minOf(minY, point.position.y)
+            minZ = minOf(minZ, point.position.z)
+            maxX = maxOf(maxX, point.position.x)
+            maxY = maxOf(maxY, point.position.y)
+            maxZ = maxOf(maxZ, point.position.z)
+        }
+        
+        return Pair(Vector3(minX, minY, minZ), Vector3(maxX, maxY, maxZ))
+    }
+    
+    /**
+     * Set heatmap grid resolution
+     */
+    fun setHeatmapResolution(resolution: Int) {
+        heatmapRenderer?.setGridResolution(resolution)
+    }
+    
+    /**
+     * Set maximum particles
+     */
+    fun setMaxParticles(max: Int) {
+        particleRenderer?.setMaxParticles(max)
+    }
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        vectorFieldRenderer?.cleanup()
+        particleRenderer?.cleanup()
+        gridRenderer?.cleanup()
+        heatmapRenderer?.cleanup()
+    }
+    
+    private fun checkGLError(operation: String) {
+        var error: Int
+        while (GLES30.glGetError().also { error = it } != GLES30.GL_NO_ERROR) {
+            Log.e(TAG, "$operation: glError $error")
+        }
+    }
+    
+    companion object {
+        private const val TAG = "GLRenderer"
+    }
+}
+
+/**
+ * Visualization mode enum
+ */
+enum class VisualizationMode {
+    VECTORS,
+    HEATMAP,
+    PARTICLES
+}

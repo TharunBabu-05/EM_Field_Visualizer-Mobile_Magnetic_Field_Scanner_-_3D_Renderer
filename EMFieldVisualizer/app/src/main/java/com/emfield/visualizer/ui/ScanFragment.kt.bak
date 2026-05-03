@@ -1,0 +1,253 @@
+package com.emfield.visualizer.ui
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Bundle
+import android.os.IBinder
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import com.emfield.visualizer.R
+import com.emfield.visualizer.databinding.FragmentScanBinding
+import com.emfield.visualizer.sensors.CalibrationManager
+import com.emfield.visualizer.sensors.SensorMonitorService
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+
+/**
+ * Fragment for scanning and data collection
+ */
+class ScanFragment : Fragment() {
+    
+    private var _binding: FragmentScanBinding? = null
+    private val binding get() = _binding!!
+    
+    private var sensorService: SensorMonitorService? = null
+    private var serviceBound = false
+    
+    private lateinit var calibrationManager: CalibrationManager
+    private var isScanning = false
+    private var isRealTimeMode = true
+    
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as SensorMonitorService.LocalBinder
+            sensorService = binder.getService()
+            serviceBound = true
+            updateUI()
+        }
+        
+        override fun onServiceDisconnected(name: ComponentName?) {
+            sensorService = null
+            serviceBound = false
+        }
+    }
+    
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentScanBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+    
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        
+        calibrationManager = CalibrationManager(requireContext())
+        
+        setupUI()
+        bindService()
+        observeCalibration()
+    }
+    
+    private fun setupUI() {
+        // Scan mode switch
+        binding.scanModeSwitch.setOnCheckedChangeListener { _, isChecked ->
+            isRealTimeMode = isChecked
+            binding.scanModeSwitch.text = if (isChecked) {
+                getString(R.string.scan_mode_realtime)
+            } else {
+                getString(R.string.scan_mode_manual)
+            }
+        }
+        
+        // Scan button
+        binding.scanFab.setOnClickListener {
+            if (isScanning) {
+                stopScanning()
+            } else {
+                startScanning()
+            }
+        }
+        
+        // Calibrate button
+        binding.calibrateButton.setOnClickListener {
+            startCalibration()
+        }
+    }
+    
+    private fun bindService() {
+        val intent = Intent(requireContext(), SensorMonitorService::class.java)
+        requireContext().startService(intent)
+        requireContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+    
+    private fun startScanning() {
+        val service = sensorService
+        if (service == null) {
+            Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        val success = service.startScanning()
+        if (success) {
+            isScanning = true
+            binding.scanFab.text = getString(R.string.scan_stop)
+            binding.scanFab.setIconResource(android.R.drawable.ic_media_pause)
+            binding.sensorStatusText.text = "Scanning..."
+            binding.sensorStatusText.setTextColor(resources.getColor(R.color.field_medium, null))
+            
+            // Start observing data
+            observeSensorData()
+        } else {
+            Toast.makeText(context, getString(R.string.error_sensor_init), Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun stopScanning() {
+        sensorService?.stopScanning()
+        isScanning = false
+        binding.scanFab.text = getString(R.string.scan_start)
+        binding.scanFab.setIconResource(android.R.drawable.ic_media_play)
+        binding.sensorStatusText.text = "Scan complete"
+        binding.sensorStatusText.setTextColor(resources.getColor(R.color.field_weak, null))
+    }
+    
+    private fun observeSensorData() {
+        val service = sensorService ?: return
+        
+        // Observe magnetic field data
+        lifecycleScope.launch {
+            service.getMagnetometerManager().magneticFieldFlow
+                .onEach { data ->
+                    updateFieldStrength(data.magnitude())
+                }
+                .launchIn(this)
+        }
+        
+        // Observe data point count
+        lifecycleScope.launch {
+            service.getSpatialMapper().dataPointCount
+                .onEach { count ->
+                    updatePointCount(count)
+                }
+                .launchIn(this)
+        }
+    }
+    
+    private fun updateFieldStrength(magnitude: Float) {
+        binding.fieldStrengthText.text = getString(R.string.scan_field_strength, magnitude)
+        
+        // Update color based on strength
+        val color = when {
+            magnitude < 30f -> R.color.field_weak
+            magnitude < 70f -> R.color.field_medium
+            else -> R.color.field_strong
+        }
+        binding.fieldStrengthText.setTextColor(resources.getColor(color, null))
+    }
+    
+    private fun updatePointCount(count: Int) {
+        binding.pointsCollectedText.text = getString(R.string.scan_points_collected, count)
+    }
+    
+    private fun startCalibration() {
+        if (calibrationManager.isCalibrating()) {
+            calibrationManager.cancelCalibration()
+            binding.calibrateButton.text = getString(R.string.scan_calibrate)
+            return
+        }
+        
+        val success = calibrationManager.startCalibration()
+        if (success) {
+            binding.calibrateButton.text = "Cancel"
+            binding.sensorStatusText.text = getString(R.string.calibration_instruction)
+            Toast.makeText(context, R.string.calibration_instruction, Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(context, "Calibration failed to start", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun observeCalibration() {
+        lifecycleScope.launch {
+            calibrationManager.calibrationProgress
+                .onEach { progress ->
+                    val percentage = (progress * 100).toInt()
+                    if (percentage > 0 && percentage < 100) {
+                        binding.sensorStatusText.text = getString(R.string.calibration_progress, percentage)
+                    }
+                }
+                .launchIn(this)
+        }
+        
+        lifecycleScope.launch {
+            calibrationManager.calibrationStatus
+                .onEach { status ->
+                    if (status.contains("complete", ignoreCase = true)) {
+                        binding.calibrateButton.text = getString(R.string.scan_calibrate)
+                        
+                        // Save calibration
+                        val calibration = calibrationManager.stopCalibration()
+                        if (calibration != null && calibration.isValid) {
+                            sensorService?.getMagnetometerManager()?.setCalibration(calibration)
+                            Toast.makeText(context, R.string.calibration_complete, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                .launchIn(this)
+        }
+    }
+    
+    private fun updateUI() {
+        val service = sensorService ?: return
+        
+        // Check sensor availability
+        val magnetometerAvailable = service.getMagnetometerManager().isSensorAvailable()
+        val imuAvailable = service.getIMUFusion().areSensorsAvailable()
+        
+        if (!magnetometerAvailable) {
+            binding.sensorStatusText.text = getString(R.string.error_no_magnetometer)
+            binding.sensorStatusText.setTextColor(resources.getColor(R.color.field_strong, null))
+            binding.scanFab.isEnabled = false
+        } else if (!imuAvailable) {
+            binding.sensorStatusText.text = "IMU sensors not available"
+            binding.sensorStatusText.setTextColor(resources.getColor(R.color.field_medium, null))
+        } else {
+            binding.sensorStatusText.text = "Sensor Status: Ready"
+            binding.sensorStatusText.setTextColor(resources.getColor(R.color.field_weak, null))
+        }
+    }
+    
+    override fun onDestroyView() {
+        super.onDestroyView()
+        
+        if (isScanning) {
+            stopScanning()
+        }
+        
+        if (serviceBound) {
+            requireContext().unbindService(serviceConnection)
+            serviceBound = false
+        }
+        
+        _binding = null
+    }
+}

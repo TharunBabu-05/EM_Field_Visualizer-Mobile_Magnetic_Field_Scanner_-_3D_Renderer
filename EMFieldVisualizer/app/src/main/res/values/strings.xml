@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">EM Field Visualizer</string>
+    
+    <!-- Navigation -->
+    <string name="nav_scan">Scan</string>
+    <string name="nav_visualize">Visualize</string>
+    <string name="nav_settings">Settings</string>
+    
+    <!-- Scan Fragment -->
+    <string name="scan_title">EM Field Scanner</string>
+    <string name="scan_start">Start Scanning</string>
+    <string name="scan_stop">Stop Scanning</string>
+    <string name="scan_calibrate">Calibrate</string>
+    <string name="scan_mode_realtime">Real-time Mode</string>
+    <string name="scan_mode_manual">Manual Mode</string>
+    <string name="scan_points_collected">Points: %d</string>
+    <string name="scan_field_strength">Field Strength: %.2f μT</string>
+    <string name="scan_mode_title">Scan Mode</string>
+    <string name="scan_mode_description">Toggle between real-time and manual scanning modes</string>
+    
+    <!-- Calibration -->
+    <string name="calibration_title">Sensor Calibration</string>
+    <string name="calibration_instruction">Move your device in a figure-8 pattern</string>
+    <string name="calibration_progress">Calibrating… %d%%</string>
+    <string name="calibration_complete">Calibration Complete!</string>
+    
+    <!-- Visualization -->
+    <string name="viz_title">3D Field Visualization</string>
+    <string name="viz_mode_vectors">Vector Field</string>
+    <string name="viz_mode_heatmap">Heatmap</string>
+    <string name="viz_mode_particles">Particle Flow</string>
+    <string name="viz_reset_camera">Reset Camera</string>
+    <string name="viz_clear_data">Clear Data</string>
+    <string name="viz_mode_title">Visualization Mode</string>
+    
+    <!-- Export -->
+    <string name="export_csv">Export CSV</string>
+    <string name="export_json">Export JSON</string>
+    <string name="export_obj">Export 3D Model</string>
+    <string name="export_success">Data exported successfully</string>
+    <string name="export_error">Export failed: %s</string>
+    <string name="export_title">Export Data</string>
+    
+    <!-- Sensor Status -->
+    <string name="sensor_status_title">Sensor Status</string>
+    <string name="sensor_status_ready">Ready</string>
+    
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_sampling_rate">Sampling Rate</string>
+    <string name="settings_filter_strength">Filter Strength</string>
+    <string name="settings_visualization_quality">Visualization Quality</string>
+    <string name="settings_about">About</string>
+    
+    <!-- Permissions -->
+    <string name="permission_sensors_rationale">Sensor access is required to measure electromagnetic fields</string>
+    <string name="permission_storage_rationale">Storage access is required to export data</string>
+    
+    <!-- Errors -->
+    <string name="error_no_magnetometer">Magnetometer sensor not found</string>
+    <string name="error_sensor_init">Failed to initialize sensors</string>
+    <string name="error_opengl">OpenGL initialization failed</string>
+</resources>

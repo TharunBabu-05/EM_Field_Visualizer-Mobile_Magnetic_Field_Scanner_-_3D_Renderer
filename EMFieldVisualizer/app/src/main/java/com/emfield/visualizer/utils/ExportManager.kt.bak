@@ -1,0 +1,622 @@
+package com.emfield.visualizer.utils
+
+import android.content.Context
+import android.util.Log
+import com.emfield.visualizer.data.MagneticFieldData
+import com.google.gson.GsonBuilder
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import java.io.File
+import java.io.FileWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+/**
+ * Comprehensive data export system with multiple formats and cloud sync capabilities
+ */
+class ExportManager(private val context: Context) {
+    
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+    
+    // Cloud sync configuration
+    private var cloudSyncEnabled = false
+    private var cloudEndpoint = "https://api.emfield-sync.com/upload"
+    private var apiKey = ""
+    
+    // Export progress tracking
+    private val _exportProgress = MutableStateFlow<ExportProgress?>(null)
+    val exportProgress: StateFlow<ExportProgress?> = _exportProgress.asStateFlow()
+    
+    /**
+     * Export data to CSV format
+     * Format: timestamp, pos_x, pos_y, pos_z, field_x, field_y, field_z, magnitude, quality
+     */
+    suspend fun exportToCSV(dataPoints: List<MagneticFieldData>): ExportResult = withContext(Dispatchers.IO) {
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, dataPoints.size, "Preparing CSV export...")
+            
+            val timestamp = dateFormat.format(Date())
+            val fileName = "em_field_data_$timestamp.csv"
+            val file = File(context.getExternalFilesDir(null), fileName)
+            
+            FileWriter(file).use { writer ->
+                // Write enhanced header
+                writer.write("timestamp,pos_x,pos_y,pos_z,field_x,field_y,field_z,magnitude,accuracy,quality\n")
+                
+                // Write data points with progress tracking
+                for ((index, point) in dataPoints.withIndex()) {
+                    if (index % 100 == 0) {
+                        _exportProgress.value = ExportProgress(index, dataPoints.size, "Writing CSV data...")
+                    }
+                    
+                    val quality = calculateDataQuality(point)
+                    writer.write(
+                        "${point.timestamp}," +
+                        "${point.position.x},${point.position.y},${point.position.z}," +
+                        "${point.field.x},${point.field.y},${point.field.z}," +
+                        "${point.magnitude()},${point.accuracy},$quality\n"
+                    )
+                }
+            }
+            
+            _exportProgress.value = ExportProgress(dataPoints.size, dataPoints.size, "CSV export complete")
+            
+            Log.i(TAG, "Exported ${dataPoints.size} points to CSV: ${file.absolutePath}")
+            ExportResult.Success(file, "CSV")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to export CSV", e)
+            ExportResult.Error("CSV export failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Export data to JSON format with enhanced metadata
+     */
+    suspend fun exportToJSON(dataPoints: List<MagneticFieldData>): ExportResult = withContext(Dispatchers.IO) {
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, dataPoints.size, "Preparing JSON export...")
+            
+            val timestamp = dateFormat.format(Date())
+            val fileName = "em_field_data_$timestamp.json"
+            val file = File(context.getExternalFilesDir(null), fileName)
+            
+            val exportData = EnhancedExportDataWrapper(
+                metadata = EnhancedExportMetadata(
+                    exportTime = System.currentTimeMillis(),
+                    pointCount = dataPoints.size,
+                    version = "2.0",
+                    deviceInfo = getDeviceInfo(),
+                    sensorInfo = getSensorInfo(dataPoints),
+                    statistics = calculateStatistics(dataPoints)
+                ),
+                dataPoints = dataPoints.mapIndexed { index, point ->
+                    if (index % 100 == 0) {
+                        _exportProgress.value = ExportProgress(index, dataPoints.size, "Processing JSON data...")
+                    }
+                    
+                    EnhancedExportDataPoint(
+                        timestamp = point.timestamp,
+                        position = Triple(point.position.x, point.position.y, point.position.z),
+                        field = Triple(point.field.x, point.field.y, point.field.z),
+                        magnitude = point.magnitude(),
+                        accuracy = point.accuracy,
+                        quality = calculateDataQuality(point)
+                    )
+                }
+            )
+            
+            val gson = GsonBuilder().setPrettyPrinting().create()
+            FileWriter(file).use { writer ->
+                gson.toJson(exportData, writer)
+            }
+            
+            _exportProgress.value = ExportProgress(dataPoints.size, dataPoints.size, "JSON export complete")
+            
+            Log.i(TAG, "Exported ${dataPoints.size} points to JSON: ${file.absolutePath}")
+            ExportResult.Success(file, "JSON")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to export JSON", e)
+            ExportResult.Error("JSON export failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Export data to Wavefront OBJ format with enhanced 3D mesh
+     */
+    suspend fun exportToOBJ(dataPoints: List<MagneticFieldData>): ExportResult = withContext(Dispatchers.IO) {
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, dataPoints.size, "Preparing OBJ export...")
+            
+            val timestamp = dateFormat.format(Date())
+            val fileName = "em_field_mesh_$timestamp.obj"
+            val file = File(context.getExternalFilesDir(null), fileName)
+            
+            FileWriter(file).use { writer ->
+                writer.write("# EM Field Visualization - Enhanced 3D Mesh\n")
+                writer.write("# Generated by EM Field Visualizer v2.0\n")
+                writer.write("# Points: ${dataPoints.size}\n")
+                writer.write("# Export Time: ${Date()}\n\n")
+                
+                // Write vertices with colors
+                for ((index, point) in dataPoints.withIndex()) {
+                    if (index % 100 == 0) {
+                        _exportProgress.value = ExportProgress(index, dataPoints.size, "Generating 3D mesh...")
+                    }
+                    
+                    writer.write("v ${point.position.x} ${point.position.y} ${point.position.z}\n")
+                    
+                    val color = getColorForMagnitude(point.magnitude())
+                    writer.write("vt ${color.first} ${color.second} ${color.third}\n")
+                    
+                    // Write normal vector for lighting
+                    val normal = point.direction()
+                    writer.write("vn ${normal.x} ${normal.y} ${normal.z}\n")
+                }
+                
+                writer.write("\n# Field vectors as lines\n")
+                for ((index, point) in dataPoints.withIndex()) {
+                    val endPoint = point.position + (point.direction() * (point.magnitude() / 100f).coerceIn(0.05f, 0.3f))
+                    val endIndex = dataPoints.size + index + 1
+                    
+                    writer.write("v ${endPoint.x} ${endPoint.y} ${endPoint.z}\n")
+                    writer.write("vn ${point.direction().x} ${point.direction().y} ${point.direction().z}\n")
+                }
+                
+                writer.write("\n# Line definitions (field vectors)\n")
+                for (i in 1..dataPoints.size) {
+                    writer.write("l $i ${dataPoints.size + i}\n")
+                }
+            }
+            
+            _exportProgress.value = ExportProgress(dataPoints.size, dataPoints.size, "OBJ export complete")
+            
+            Log.i(TAG, "Exported ${dataPoints.size} points to OBJ: ${file.absolutePath}")
+            ExportResult.Success(file, "OBJ")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to export OBJ", e)
+            ExportResult.Error("OBJ export failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Export data to MATLAB format for scientific analysis
+     */
+    suspend fun exportToMATLAB(dataPoints: List<MagneticFieldData>): ExportResult = withContext(Dispatchers.IO) {
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, dataPoints.size, "Preparing MATLAB export...")
+            
+            val timestamp = dateFormat.format(Date())
+            val fileName = "em_field_data_$timestamp.m"
+            val file = File(context.getExternalFilesDir(null), fileName)
+            
+            FileWriter(file).use { writer ->
+                writer.write("% EM Field Data - MATLAB Format\n")
+                writer.write("% Generated by EM Field Visualizer\n")
+                writer.write("% Points: ${dataPoints.size}\n")
+                writer.write("% Export Time: ${Date()}\n\n")
+                
+                // Write data as MATLAB arrays
+                writer.write("timestamps = [\n")
+                for ((index, point) in dataPoints.withIndex()) {
+                    if (index % 100 == 0) {
+                        _exportProgress.value = ExportProgress(index, dataPoints.size, "Writing MATLAB data...")
+                    }
+                    writer.write("${point.timestamp}")
+                    if (index < dataPoints.size - 1) writer.write(", ")
+                    if (index % 10 == 9) writer.write("...\n")
+                }
+                writer.write("\n];\n\n")
+                
+                writer.write("positions = [\n")
+                for ((index, point) in dataPoints.withIndex()) {
+                    writer.write("${point.position.x}, ${point.position.y}, ${point.position.z}")
+                    if (index < dataPoints.size - 1) writer.write("; ")
+                    if (index % 5 == 4) writer.write("...\n")
+                }
+                writer.write("\n];\n\n")
+                
+                writer.write("fields = [\n")
+                for ((index, point) in dataPoints.withIndex()) {
+                    writer.write("${point.field.x}, ${point.field.y}, ${point.field.z}")
+                    if (index < dataPoints.size - 1) writer.write("; ")
+                    if (index % 5 == 4) writer.write("...\n")
+                }
+                writer.write("\n];\n\n")
+                
+                writer.write("magnitudes = [\n")
+                for ((index, point) in dataPoints.withIndex()) {
+                    writer.write("${point.magnitude()}")
+                    if (index < dataPoints.size - 1) writer.write(", ")
+                    if (index % 20 == 19) writer.write("...\n")
+                }
+                writer.write("\n];\n\n")
+                
+                // Add basic analysis functions
+                writer.write("% Basic analysis functions\n")
+                writer.write("function plotField()\n")
+                writer.write("    figure;\n")
+                writer.write("    scatter3(positions(:,1), positions(:,2), positions(:,3), 50, magnitudes, 'filled');\n")
+                writer.write("    colorbar;\n")
+                writer.write("    xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');\n")
+                writer.write("    title('EM Field Strength');\n")
+                writer.write("end\n\n")
+            }
+            
+            _exportProgress.value = ExportProgress(dataPoints.size, dataPoints.size, "MATLAB export complete")
+            
+            Log.i(TAG, "Exported ${dataPoints.size} points to MATLAB: ${file.absolutePath}")
+            ExportResult.Success(file, "MATLAB")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to export MATLAB", e)
+            ExportResult.Error("MATLAB export failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Create compressed export package with all formats
+     */
+    suspend fun exportToPackage(dataPoints: List<MagneticFieldData>): ExportResult = withContext(Dispatchers.IO) {
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, 4, "Creating export package...")
+            
+            val timestamp = dateFormat.format(Date())
+            val packageFileName = "em_field_package_$timestamp.zip"
+            val packageFile = File(context.getExternalFilesDir(null), packageFileName)
+            
+            val tempFiles = mutableListOf<File>()
+            
+            try {
+                // Export individual formats
+                val csvResult = exportToCSV(dataPoints)
+                val jsonResult = exportToJSON(dataPoints)
+                val objResult = exportToOBJ(dataPoints)
+                val matlabResult = exportToMATLAB(dataPoints)
+                
+                // Collect successful exports
+                listOf(csvResult, jsonResult, objResult, matlabResult).forEach { result ->
+                    if (result is ExportResult.Success) {
+                        tempFiles.add(result.file)
+                    }
+                }
+                
+                _exportProgress.value = ExportProgress(2, 4, "Compressing files...")
+                
+                // Create ZIP package
+                ZipOutputStream(packageFile.outputStream().buffered()).use { zipOut ->
+                    tempFiles.forEach { file ->
+                        zipOut.putNextEntry(ZipEntry(file.name))
+                        file.inputStream().use { input ->
+                            input.copyTo(zipOut)
+                        }
+                        zipOut.closeEntry()
+                    }
+                    
+                    // Add metadata file
+                    zipOut.putNextEntry(ZipEntry("metadata.txt"))
+                    val metadata = createPackageMetadata(dataPoints, tempFiles)
+                    zipOut.write(metadata.toByteArray())
+                    zipOut.closeEntry()
+                }
+                
+                _exportProgress.value = ExportProgress(4, 4, "Package export complete")
+                
+                Log.i(TAG, "Created export package: ${packageFile.absolutePath}")
+                ExportResult.Success(packageFile, "PACKAGE")
+            } finally {
+                // Clean up temporary files
+                tempFiles.forEach { it.delete() }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create package", e)
+            ExportResult.Error("Package export failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Upload exported data to cloud storage
+     */
+    suspend fun uploadToCloud(file: File): CloudUploadResult = withContext(Dispatchers.IO) {
+        if (!cloudSyncEnabled) {
+            return@withContext CloudUploadResult.Error("Cloud sync is disabled")
+        }
+        
+        return@withContext try {
+            _exportProgress.value = ExportProgress(0, 100, "Uploading to cloud...")
+            
+            val url = URL(cloudEndpoint)
+            val connection = url.openConnection() as HttpURLConnection
+            
+            connection.apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/octet-stream")
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("X-File-Name", file.name)
+                setRequestProperty("X-File-Size", file.length().toString())
+            }
+            
+            // Upload file with progress tracking
+            connection.outputStream.use { output ->
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    var totalBytesRead = 0L
+                    val fileSize = file.length()
+                    
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+                        
+                        val progress = (totalBytesRead.toFloat() / fileSize * 100).toInt()
+                        _exportProgress.value = ExportProgress(progress, 100, "Uploading to cloud...")
+                    }
+                }
+            }
+            
+            val responseCode = connection.responseCode
+            val responseMessage = connection.inputStream.bufferedReader().use { it.readText() }
+            
+            if (responseCode == 200) {
+                _exportProgress.value = ExportProgress(100, 100, "Cloud upload complete")
+                CloudUploadResult.Success("Upload successful", responseMessage)
+            } else {
+                CloudUploadResult.Error("Upload failed: HTTP $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Cloud upload failed", e)
+            CloudUploadResult.Error("Cloud upload failed: ${e.message}")
+        }
+    }
+    
+    /**
+     * Configure cloud sync settings
+     */
+    fun configureCloudSync(enabled: Boolean, endpoint: String = "", apiKey: String = "") {
+        cloudSyncEnabled = enabled
+        if (enabled) {
+            cloudEndpoint = endpoint.ifEmpty { this.cloudEndpoint }
+            this.apiKey = apiKey.ifEmpty { this.apiKey }
+        }
+        
+        Log.i(TAG, "Cloud sync ${if (enabled) "enabled" else "disabled"}")
+    }
+    
+    /**
+     * Get export progress
+     */
+    fun getExportProgress(): StateFlow<ExportProgress?> = exportProgress
+    
+    private fun getColorForMagnitude(magnitude: Float): Triple<Float, Float, Float> {
+        // Color gradient: green (weak) -> yellow (medium) -> red (strong)
+        val normalized = (magnitude / 100f).coerceIn(0f, 1f)
+        
+        return when {
+            normalized < 0.5f -> {
+                // Green to yellow
+                val t = normalized * 2f
+                Triple(t, 1f, 0f)
+            }
+            else -> {
+                // Yellow to red
+                val t = (normalized - 0.5f) * 2f
+                Triple(1f, 1f - t, 0f)
+            }
+        }
+    }
+    
+    private fun calculateDataQuality(point: MagneticFieldData): Float {
+        var quality = 1.0f
+        
+        // Quality based on sensor accuracy
+        quality *= when (point.accuracy) {
+            3 -> 1.0f
+            2 -> 0.8f
+            1 -> 0.6f
+            else -> 0.3f
+        }
+        
+        // Quality based on field strength
+        val magnitude = point.magnitude()
+        quality *= when {
+            magnitude < 1f -> 0.5f
+            magnitude > 200f -> 0.7f
+            magnitude > 20f && magnitude < 100f -> 1.0f
+            else -> 0.8f
+        }
+        
+        return quality.coerceIn(0f, 1f)
+    }
+    
+    private fun getDeviceInfo(): DeviceInfo {
+        return DeviceInfo(
+            manufacturer = android.os.Build.MANUFACTURER,
+            model = android.os.Build.MODEL,
+            androidVersion = android.os.Build.VERSION.RELEASE,
+            appVersion = "2.0"
+        )
+    }
+    
+    private fun getSensorInfo(dataPoints: List<MagneticFieldData>): SensorInfo {
+        if (dataPoints.isEmpty()) {
+            return SensorInfo(0, 0f, 0f, 0f)
+        }
+        
+        val accuracies = dataPoints.map { it.accuracy }
+        val magnitudes = dataPoints.map { it.magnitude() }
+        
+        return SensorInfo(
+            sampleCount = dataPoints.size,
+            averageAccuracy = accuracies.average().toFloat(),
+            averageMagnitude = magnitudes.average().toFloat(),
+            maxMagnitude = magnitudes.maxOrNull() ?: 0f
+        )
+    }
+    
+    private fun calculateStatistics(dataPoints: List<MagneticFieldData>): DataStatistics {
+        if (dataPoints.isEmpty()) {
+            return DataStatistics(0, 0f, 0f, 0f, 0f, 0f, 0f)
+        }
+        
+        val magnitudes = dataPoints.map { it.magnitude() }
+        val timestamps = dataPoints.map { it.timestamp }
+        
+        return DataStatistics(
+            pointCount = dataPoints.size,
+            averageMagnitude = magnitudes.average().toFloat(),
+            minMagnitude = magnitudes.minOrNull() ?: 0f,
+            maxMagnitude = magnitudes.maxOrNull() ?: 0f,
+            standardDeviation = calculateStandardDeviation(magnitudes),
+            duration = (timestamps.maxOrNull() ?: 0) - (timestamps.minOrNull() ?: 0),
+            averageSamplingRate = if (timestamps.size > 1) {
+                val timeSpan = (timestamps.last() - timestamps.first()) / 1000.0
+                dataPoints.size / timeSpan
+            } else 0.0
+        )
+    }
+    
+    private fun calculateStandardDeviation(values: List<Float>): Float {
+        if (values.size < 2) return 0f
+        
+        val mean = values.average().toFloat()
+        val variance = values.map { (it - mean) * (it - mean) }.average().toFloat()
+        return kotlin.math.sqrt(variance)
+    }
+    
+    private fun createPackageMetadata(dataPoints: List<MagneticFieldData>, files: List<File>): String {
+        val timestamp = dateFormat.format(Date())
+        val stats = calculateStatistics(dataPoints)
+        
+        return buildString {
+            appendLine("EM Field Data Package")
+            appendLine("========================")
+            appendLine("Generated: ${Date()}")
+            appendLine("Timestamp: $timestamp")
+            appendLine("Version: 2.0")
+            appendLine()
+            appendLine("Data Statistics:")
+            appendLine("- Points: ${stats.pointCount}")
+            appendLine("- Average Magnitude: ${stats.averageMagnitude} μT")
+            appendLine("- Range: ${stats.minMagnitude} - ${stats.maxMagnitude} μT")
+            appendLine("- Standard Deviation: ${stats.standardDeviation} μT")
+            appendLine("- Duration: ${stats.duration} ms")
+            appendLine("- Sampling Rate: ${stats.averageSamplingRate} Hz")
+            appendLine()
+            appendLine("Files:")
+            files.forEach { file ->
+                appendLine("- ${file.name} (${file.length()} bytes)")
+            }
+            appendLine()
+            appendLine("Device Information:")
+            val deviceInfo = getDeviceInfo()
+            appendLine("- Manufacturer: ${deviceInfo.manufacturer}")
+            appendLine("- Model: ${deviceInfo.model}")
+            appendLine("- Android Version: ${deviceInfo.androidVersion}")
+            appendLine("- App Version: ${deviceInfo.appVersion}")
+        }
+    }
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        scope.cancel()
+        Log.i(TAG, "Export manager cleaned up")
+    }
+    
+    companion object {
+        private const val TAG = "ExportManager"
+    }
+}
+
+// Enhanced data classes for JSON export
+data class EnhancedExportDataWrapper(
+    val metadata: EnhancedExportMetadata,
+    val dataPoints: List<EnhancedExportDataPoint>
+)
+
+data class EnhancedExportMetadata(
+    val exportTime: Long,
+    val pointCount: Int,
+    val version: String,
+    val deviceInfo: DeviceInfo,
+    val sensorInfo: SensorInfo,
+    val statistics: DataStatistics
+)
+
+data class EnhancedExportDataPoint(
+    val timestamp: Long,
+    val position: Triple<Float, Float, Float>,
+    val field: Triple<Float, Float, Float>,
+    val magnitude: Float,
+    val accuracy: Int,
+    val quality: Float
+)
+
+data class DeviceInfo(
+    val manufacturer: String,
+    val model: String,
+    val androidVersion: String,
+    val appVersion: String
+)
+
+data class SensorInfo(
+    val sampleCount: Int,
+    val averageAccuracy: Float,
+    val averageMagnitude: Float,
+    val maxMagnitude: Float
+)
+
+data class DataStatistics(
+    val pointCount: Int,
+    val averageMagnitude: Float,
+    val minMagnitude: Float,
+    val maxMagnitude: Float,
+    val standardDeviation: Float,
+    val duration: Long,
+    val averageSamplingRate: Double
+)
+
+// Result classes
+sealed class ExportResult {
+    data class Success(val file: File, val format: String) : ExportResult()
+    data class Error(val message: String) : ExportResult()
+}
+
+sealed class CloudUploadResult {
+    data class Success(val message: String, val details: String) : CloudUploadResult()
+    data class Error(val message: String) : CloudUploadResult()
+}
+
+data class ExportProgress(
+    val current: Int,
+    val total: Int,
+    val message: String
+) {
+    val percentage: Float
+        get() = if (total > 0) (current.toFloat() / total * 100) else 0f
+}
+
+// Legacy data classes for backward compatibility
+data class ExportDataWrapper(
+    val metadata: ExportMetadata,
+    val dataPoints: List<ExportDataPoint>
+)
+
+data class ExportMetadata(
+    val exportTime: Long,
+    val pointCount: Int,
+    val version: String
+)
+
+data class ExportDataPoint(
+    val timestamp: Long,
+    val position: Triple<Float, Float, Float>,
+    val field: Triple<Float, Float, Float>,
+    val magnitude: Float,
+    val accuracy: Int
+)

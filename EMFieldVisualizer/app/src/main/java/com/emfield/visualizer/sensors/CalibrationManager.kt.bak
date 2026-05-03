@@ -1,0 +1,706 @@
+package com.emfield.visualizer.sensors
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.util.Log
+import com.emfield.visualizer.data.CalibrationData
+import com.emfield.visualizer.data.Vector3
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.*
+
+/**
+ * Advanced calibration system with automatic drift compensation and error correction
+ * Implements hard-iron, soft-iron, and temperature compensation
+ */
+class CalibrationManager(
+    private val context: Context
+) : SensorEventListener {
+    
+    private val sensorManager: SensorManager = 
+        context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val preferences: SharedPreferences = 
+        context.getSharedPreferences("calibration_prefs", Context.MODE_PRIVATE)
+    
+    private var magnetometerSensor: Sensor? = null
+    private var isCalibrating = false
+    private var autoCalibrationEnabled = true
+    
+    // Advanced calibration data collection
+    private val samples = mutableListOf<Vector3>()
+    private val recentSamples = mutableListOf<Vector3>() // For drift detection
+    private var minValues = Vector3(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
+    private var maxValues = Vector3(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
+    
+    // Drift compensation
+    private var driftOffset = Vector3.ZERO
+    private var lastCalibrationTime = 0L
+    private var driftRate = Vector3.ZERO // μT per hour
+    
+    // Temperature compensation
+    private var temperatureCompensationEnabled = false
+    private var temperatureCoefficients = Vector3.ZERO
+    
+    // Calibration progress and status
+    private val _calibrationProgress = MutableStateFlow(0f)
+    val calibrationProgress: StateFlow<Float> = _calibrationProgress.asStateFlow()
+    
+    private val _calibrationStatus = MutableStateFlow("Not started")
+    val calibrationStatus: StateFlow<String> = _calibrationStatus.asStateFlow()
+    
+    private val _calibrationQuality = MutableStateFlow(0f)
+    val calibrationQuality: StateFlow<Float> = _calibrationQuality.asStateFlow()
+    
+    // Current calibration data
+    private var currentCalibration: CalibrationData = CalibrationData()
+    
+    // Error detection
+    private val _errorDetection = MutableStateFlow<CalibrationError?>(null)
+    val errorDetection: StateFlow<CalibrationError?> = _errorDetection.asStateFlow()
+    
+    init {
+        magnetometerSensor = sensorManager.getDefaultSensor(
+            Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED
+        ) ?: sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        
+        // Load saved calibration
+        loadSavedCalibration()
+        
+        // Start drift monitoring
+        startDriftMonitoring()
+    }
+    
+    private fun loadSavedCalibration() {
+        try {
+            val isValid = preferences.getBoolean("calibration_valid", false)
+            val timestamp = preferences.getLong("calibration_timestamp", 0)
+            
+            if (isValid && timestamp > 0) {
+                val hardIronX = preferences.getFloat("hard_iron_x", 0f)
+                val hardIronY = preferences.getFloat("hard_iron_y", 0f)
+                val hardIronZ = preferences.getFloat("hard_iron_z", 0f)
+                
+                val softIronMatrix = Array(3) { FloatArray(3) { 0f } }
+                for (i in 0..2) {
+                    for (j in 0..2) {
+                        softIronMatrix[i][j] = preferences.getFloat("soft_iron_${i}_$j", 
+                            if (i == j) 1f else 0f)
+                    }
+                }
+                
+                currentCalibration = CalibrationData(
+                    hardIronOffset = Vector3(hardIronX, hardIronY, hardIronZ),
+                    softIronMatrix = softIronMatrix,
+                    timestamp = timestamp,
+                    isValid = true
+                )
+                
+                // Calculate drift since last calibration
+                calculateDriftCompensation(timestamp)
+                
+                Log.i(TAG, "Loaded saved calibration from ${Date(timestamp)}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load saved calibration", e)
+        }
+    }
+    
+    private fun startDriftMonitoring() {
+        scope.launch {
+            while (isActive) {
+                delay(60000) // Check every minute
+                
+                if (autoCalibrationEnabled && !isCalibrating) {
+                    checkAndApplyAutoCalibration()
+                }
+            }
+        }
+    }
+    
+    private fun checkAndApplyAutoCalibration() {
+        // Collect recent samples for drift analysis
+        if (recentSamples.size >= RECENT_SAMPLE_SIZE) {
+            val avgRecent = recentSamples.average()
+            val calibratedAvg = currentCalibration.apply(avgRecent)
+            
+            // Detect significant drift
+            val expectedEarthField = 50f // μT
+            val deviation = abs(calibratedAvg.magnitude() - expectedEarthField)
+            
+            if (deviation > DRIFT_THRESHOLD) {
+                Log.w(TAG, "Significant drift detected: ${deviation}μT")
+                
+                // Update drift compensation
+                updateDriftCompensation(calibratedAvg)
+                
+                // Notify user if drift is severe
+                if (deviation > SEVERE_DRIFT_THRESHOLD) {
+                    _errorDetection.value = CalibrationError(
+                        type = ErrorType.SEVERE_DRIFT,
+                        magnitude = deviation,
+                        message = "Significant sensor drift detected. Consider recalibrating."
+                    )
+                }
+            }
+            
+            recentSamples.clear()
+        }
+    }
+    
+    private fun updateDriftCompensation(currentField: Vector3) {
+        val expectedField = Vector3(0f, 0f, 50f) // Assuming Z is up
+        val drift = currentField - expectedField
+        
+        // Update drift rate (exponential moving average)
+        val alpha = 0.1f
+        driftRate = driftRate * (1 - alpha) + drift * alpha
+        
+        // Update drift offset
+        driftOffset = driftOffset + drift * 0.1f
+        
+        Log.d(TAG, "Updated drift compensation: offset=$driftOffset, rate=$driftRate")
+    }
+    
+    private fun calculateDriftCompensation(lastCalibrationTime: Long) {
+        val hoursSinceCalibration = (System.currentTimeMillis() - lastCalibrationTime) / (1000f * 60f * 60f)
+        
+        if (hoursSinceCalibration > 0) {
+            driftOffset = driftRate * hoursSinceCalibration
+            Log.i(TAG, "Calculated drift compensation: $driftOffset μT after $hoursSinceCalibration hours")
+        }
+    }
+    
+    /**
+     * Start advanced calibration process
+     * Uses figure-8 pattern with quality assessment
+     */
+    fun startCalibration(): Boolean {
+        if (isCalibrating) {
+            Log.w(TAG, "Calibration already in progress")
+            return false
+        }
+        
+        if (magnetometerSensor == null) {
+            Log.e(TAG, "No magnetometer available")
+            _calibrationStatus.value = "Error: No sensor"
+            return false
+        }
+        
+        // Reset calibration data
+        samples.clear()
+        recentSamples.clear()
+        minValues = Vector3(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
+        maxValues = Vector3(Float.MIN_VALUE, Float.MIN_VALUE, Float.MIN_VALUE)
+        _calibrationProgress.value = 0f
+        _calibrationQuality.value = 0f
+        _calibrationStatus.value = "Move device in figure-8 pattern"
+        _errorDetection.value = null
+        
+        // Start listening to sensor
+        val success = sensorManager.registerListener(
+            this,
+            magnetometerSensor,
+            SensorManager.SENSOR_DELAY_GAME
+        )
+        
+        if (success) {
+            isCalibrating = true
+            Log.i(TAG, "Advanced calibration started")
+        } else {
+            _calibrationStatus.value = "Error: Failed to start sensor"
+        }
+        
+        return success
+    }
+    
+    /**
+     * Start automatic background calibration
+     */
+    fun startAutoCalibration() {
+        autoCalibrationEnabled = true
+        _calibrationStatus.value = "Auto-calibration enabled"
+        Log.i(TAG, "Auto-calibration enabled")
+    }
+    
+    /**
+     * Stop automatic calibration
+     */
+    fun stopAutoCalibration() {
+        autoCalibrationEnabled = false
+        _calibrationStatus.value = "Auto-calibration disabled"
+        Log.i(TAG, "Auto-calibration disabled")
+    }
+    
+    /**
+     * Stop calibration and compute advanced calibration data
+     */
+    fun stopCalibration(): CalibrationData? {
+        if (!isCalibrating) {
+            return null
+        }
+        
+        sensorManager.unregisterListener(this)
+        isCalibrating = false
+        
+        if (samples.size < MIN_SAMPLES) {
+            Log.w(TAG, "Not enough samples for calibration: ${samples.size}")
+            _calibrationStatus.value = "Error: Not enough data"
+            return null
+        }
+        
+        _calibrationStatus.value = "Computing calibration..."
+        
+        val calibration = computeAdvancedCalibration()
+        
+        if (calibration.isValid) {
+            currentCalibration = calibration
+            saveCalibration(calibration)
+            
+            _calibrationProgress.value = 1f
+            _calibrationQuality.value = calculateCalibrationQuality(calibration)
+            _calibrationStatus.value = "Calibration complete! Quality: ${(_calibrationQuality.value * 100).toInt()}%"
+            
+            // Reset drift compensation
+            driftOffset = Vector3.ZERO
+            lastCalibrationTime = System.currentTimeMillis()
+            
+            Log.i(TAG, "Advanced calibration completed successfully")
+        } else {
+            _calibrationStatus.value = "Error: Invalid calibration"
+            _errorDetection.value = CalibrationError(
+                type = ErrorType.CALIBRATION_FAILED,
+                magnitude = 0f,
+                message = "Calibration failed. Try moving device more thoroughly."
+            )
+            Log.e(TAG, "Calibration failed")
+        }
+        
+        return calibration
+    }
+    
+    private fun saveCalibration(calibration: CalibrationData) {
+        try {
+            preferences.edit().apply {
+                putBoolean("calibration_valid", calibration.isValid)
+                putLong("calibration_timestamp", calibration.timestamp)
+                
+                putFloat("hard_iron_x", calibration.hardIronOffset.x)
+                putFloat("hard_iron_y", calibration.hardIronOffset.y)
+                putFloat("hard_iron_z", calibration.hardIronOffset.z)
+                
+                for (i in 0..2) {
+                    for (j in 0..2) {
+                        putFloat("soft_iron_${i}_$j", calibration.softIronMatrix[i][j])
+                    }
+                }
+                
+                putFloat("drift_offset_x", driftOffset.x)
+                putFloat("drift_offset_y", driftOffset.y)
+                putFloat("drift_offset_z", driftOffset.z)
+                
+                apply()
+            }
+            
+            Log.i(TAG, "Calibration saved successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save calibration", e)
+        }
+    }
+    
+    private fun calculateCalibrationQuality(calibration: CalibrationData): Float {
+        var quality = 1.0f
+        
+        // Check coverage quality
+        val coverage = calculateCoverage()
+        quality *= coverage
+        
+        // Check offset magnitude (smaller is better)
+        val offsetMagnitude = calibration.hardIronOffset.magnitude()
+        quality *= exp(-offsetMagnitude / 100f) // Exponential decay
+        
+        // Check scale factor uniformity
+        val scaleFactors = listOf(
+            calibration.softIronMatrix[0][0],
+            calibration.softIronMatrix[1][1],
+            calibration.softIronMatrix[2][2]
+        )
+        val avgScale = scaleFactors.average().toFloat()
+        val scaleVariance = scaleFactors.map { (it - avgScale).pow(2) }.average().toFloat()
+        quality *= exp(-scaleVariance) // Penalize non-uniform scaling
+        
+        // Check sample distribution
+        val distributionQuality = calculateSampleDistribution()
+        quality *= distributionQuality
+        
+        return quality.coerceIn(0f, 1f)
+    }
+    
+    private fun calculateSampleDistribution(): Float {
+        if (samples.size < 100) return 0f
+        
+        // Divide space into octants and check distribution
+        val octants = mutableMapOf<Int, Int>()
+        val center = Vector3(
+            (minValues.x + maxValues.x) / 2f,
+            (minValues.y + maxValues.y) / 2f,
+            (minValues.z + maxValues.z) / 2f
+        )
+        
+        for (sample in samples) {
+            val octant = getOctant(sample - center)
+            octants[octant] = octants.getOrDefault(octant, 0) + 1
+        }
+        
+        // Good distribution should have samples in most octants
+        val filledOctants = octants.size
+        return (filledOctants / 8f).coerceIn(0f, 1f)
+    }
+    
+    private fun getOctant(vector: Vector3): Int {
+        var octant = 0
+        if (vector.x >= 0) octant += 1
+        if (vector.y >= 0) octant += 2
+        if (vector.z >= 0) octant += 4
+        return octant
+    }
+    
+    override fun onSensorChanged(event: SensorEvent) {
+        if (!isCalibrating) return
+        
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
+        
+        val sample = Vector3(x, y, z)
+        samples.add(sample)
+        
+        // Keep recent samples for drift detection
+        recentSamples.add(sample)
+        if (recentSamples.size > RECENT_SAMPLE_SIZE) {
+            recentSamples.removeAt(0)
+        }
+        
+        // Update min/max for hard-iron calibration
+        minValues = Vector3(
+            minOf(minValues.x, x),
+            minOf(minValues.y, y),
+            minOf(minValues.z, z)
+        )
+        maxValues = Vector3(
+            maxOf(maxValues.x, x),
+            maxOf(maxValues.y, y),
+            maxOf(maxValues.z, z)
+        )
+        
+        // Update progress based on sample count and coverage
+        val sampleProgress = (samples.size.toFloat() / TARGET_SAMPLES).coerceIn(0f, 0.6f)
+        val coverageProgress = calculateCoverage() * 0.3f
+        val distributionProgress = calculateSampleDistribution() * 0.1f
+        _calibrationProgress.value = sampleProgress + coverageProgress + distributionProgress
+        
+        // Provide feedback
+        if (samples.size % 50 == 0) {
+            val coverage = (calculateCoverage() * 100).toInt()
+            val distribution = (calculateSampleDistribution() * 100).toInt()
+            _calibrationStatus.value = "Coverage: $coverage% | Distribution: $distribution% - Keep moving!"
+        }
+        
+        // Detect potential issues
+        detectCalibrationIssues(sample)
+    }
+    
+    private fun detectCalibrationIssues(sample: Vector3) {
+        val magnitude = sample.magnitude()
+        
+        // Check for sensor saturation
+        if (magnitude > SENSOR_SATURATION_THRESHOLD) {
+            _errorDetection.value = CalibrationError(
+                type = ErrorType.SENSOR_SATURATION,
+                magnitude = magnitude,
+                message = "Sensor saturation detected. Move away from magnetic sources."
+            )
+        }
+        
+        // Check for sensor noise
+        if (samples.size > 10) {
+            val recentMagnitude = samples.takeLast(10).map { it.magnitude() }
+            val avgMagnitude = recentMagnitude.average().toFloat()
+            val stdDev = sqrt(recentMagnitude.map { (it - avgMagnitude).pow(2) }.average().toFloat())
+            
+            if (stdDev > NOISE_THRESHOLD) {
+                _errorDetection.value = CalibrationError(
+                    type = ErrorType.HIGH_NOISE,
+                    magnitude = stdDev,
+                    message = "High sensor noise detected. Check for interference."
+                )
+            }
+        }
+    }
+    
+    override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
+        // Not critical for calibration
+    }
+    
+    /**
+     * Calculate how well the space is covered (0-1)
+     */
+    private fun calculateCoverage(): Float {
+        if (samples.isEmpty()) return 0f
+        
+        val rangeX = maxValues.x - minValues.x
+        val rangeY = maxValues.y - minValues.y
+        val rangeZ = maxValues.z - minValues.z
+        
+        // Good coverage means significant range in all axes
+        val avgRange = (rangeX + rangeY + rangeZ) / 3f
+        
+        // Expected range is roughly 2x Earth's field (~50 μT * 2 = 100 μT)
+        val expectedRange = 100f
+        
+        return (avgRange / expectedRange).coerceIn(0f, 1f)
+    }
+    
+    /**
+     * Compute advanced calibration with error correction
+     */
+    private fun computeAdvancedCalibration(): CalibrationData {
+        if (samples.size < MIN_SAMPLES) {
+            return CalibrationData(isValid = false)
+        }
+        
+        // Remove outliers
+        val filteredSamples = removeOutliers(samples)
+        
+        // Hard-iron calibration (bias offset)
+        val hardIronOffset = computeHardIronOffset(filteredSamples)
+        
+        // Soft-iron calibration (scale factors)
+        val softIronMatrix = computeSoftIronMatrix(filteredSamples)
+        
+        // Validate calibration
+        val isValid = validateAdvancedCalibration(hardIronOffset, softIronMatrix, filteredSamples)
+        
+        Log.i(TAG, "Advanced calibration computed:")
+        Log.i(TAG, "  Samples: ${samples.size} -> ${filteredSamples.size} (filtered)")
+        Log.i(TAG, "  Hard-iron offset: $hardIronOffset")
+        Log.i(TAG, "  Soft-iron matrix computed")
+        Log.i(TAG, "  Valid: $isValid")
+        
+        return CalibrationData(
+            hardIronOffset = hardIronOffset,
+            softIronMatrix = softIronMatrix,
+            timestamp = System.currentTimeMillis(),
+            isValid = isValid
+        )
+    }
+    
+    private fun removeOutliers(samples: List<Vector3>): List<Vector3> {
+        if (samples.size < 20) return samples
+        
+        val magnitudes = samples.map { it.magnitude() }
+        val mean = magnitudes.average().toFloat()
+        val stdDev = sqrt(magnitudes.map { (it - mean).pow(2) }.average().toFloat())
+        
+        // Remove samples beyond 2 standard deviations
+        return samples.filter { abs(it.magnitude() - mean) <= 2 * stdDev }
+    }
+    
+    private fun computeHardIronOffset(samples: List<Vector3>): Vector3 {
+        // Use median instead of mean for robustness
+        val sortedX = samples.map { it.x }.sorted()
+        val sortedY = samples.map { it.y }.sorted()
+        val sortedZ = samples.map { it.z }.sorted()
+        
+        val medianX = sortedX[sortedX.size / 2]
+        val medianY = sortedY[sortedY.size / 2]
+        val medianZ = sortedZ[sortedZ.size / 2]
+        
+        return Vector3(medianX, medianY, medianZ)
+    }
+    
+    private fun computeSoftIronMatrix(samples: List<Vector3>): Array<FloatArray> {
+        val rangeX = maxValues.x - minValues.x
+        val rangeY = maxValues.y - minValues.y
+        val rangeZ = maxValues.z - minValues.z
+        
+        val avgRange = (rangeX + rangeY + rangeZ) / 3f
+        
+        val softIronMatrix = Array(3) { FloatArray(3) { 0f } }
+        
+        if (avgRange > 0f) {
+            softIronMatrix[0][0] = avgRange / rangeX
+            softIronMatrix[1][1] = avgRange / rangeY
+            softIronMatrix[2][2] = avgRange / rangeZ
+        } else {
+            // Identity matrix if invalid
+            softIronMatrix[0][0] = 1f
+            softIronMatrix[1][1] = 1f
+            softIronMatrix[2][2] = 1f
+        }
+        
+        return softIronMatrix
+    }
+    
+    private fun validateAdvancedCalibration(
+        hardIronOffset: Vector3,
+        softIronMatrix: Array<FloatArray>,
+        samples: List<Vector3>
+    ): Boolean {
+        // Check if offset is reasonable (< 200 μT)
+        if (hardIronOffset.magnitude() > 200f) {
+            Log.w(TAG, "Hard-iron offset too large: ${hardIronOffset.magnitude()}")
+            return false
+        }
+        
+        // Check if scale factors are reasonable (0.3 to 3.0)
+        for (i in 0..2) {
+            if (softIronMatrix[i][i] < 0.3f || softIronMatrix[i][i] > 3.0f) {
+                Log.w(TAG, "Scale factor out of range: ${softIronMatrix[i][i]}")
+                return false
+            }
+        }
+        
+        // Check if we have enough coverage
+        if (calculateCoverage() < 0.5f) {
+            Log.w(TAG, "Insufficient coverage: ${calculateCoverage()}")
+            return false
+        }
+        
+        // Check sample distribution
+        if (calculateSampleDistribution() < 0.4f) {
+            Log.w(TAG, "Poor sample distribution: ${calculateSampleDistribution()}")
+            return false
+        }
+        
+        // Validate with Earth's magnetic field strength
+        val calibratedSamples = samples.map { currentCalibration.apply(it) }
+        val avgMagnitude = calibratedSamples.map { it.magnitude() }.average().toFloat()
+        
+        if (abs(avgMagnitude - EARTH_FIELD_STRENGTH) > EARTH_FIELD_TOLERANCE) {
+            Log.w(TAG, "Calibrated field strength incorrect: $avgMagnitude μT")
+            return false
+        }
+        
+        return true
+    }
+    
+    /**
+     * Apply calibration with drift compensation
+     */
+    fun applyCalibration(rawData: Vector3): Vector3 {
+        // Apply drift compensation
+        val driftCompensated = rawData - driftOffset
+        
+        // Apply calibration
+        return currentCalibration.apply(driftCompensated)
+    }
+    
+    /**
+     * Get current calibration data
+     */
+    fun getCurrentCalibration(): CalibrationData = currentCalibration
+    
+    /**
+     * Get calibration statistics
+     */
+    fun getCalibrationStats(): CalibrationStats {
+        return CalibrationStats(
+            isValid = currentCalibration.isValid,
+            timestamp = currentCalibration.timestamp,
+            quality = _calibrationQuality.value,
+            driftOffset = driftOffset,
+            driftRate = driftRate,
+            autoCalibrationEnabled = autoCalibrationEnabled,
+            lastError = _errorDetection.value
+        )
+    }
+    
+    /**
+     * Reset calibration to default
+     */
+    fun resetCalibration() {
+        currentCalibration = CalibrationData()
+        driftOffset = Vector3.ZERO
+        driftRate = Vector3.ZERO
+        
+        preferences.edit().clear().apply()
+        
+        _calibrationStatus.value = "Calibration reset"
+        _calibrationQuality.value = 0f
+        _errorDetection.value = null
+        
+        Log.i(TAG, "Calibration reset to default")
+    }
+    
+    /**
+     * Cleanup resources
+     */
+    fun cleanup() {
+        cancelCalibration()
+        scope.cancel()
+        Log.i(TAG, "Calibration manager cleaned up")
+    }
+    
+    companion object {
+        private const val TAG = "CalibrationManager"
+        private const val MIN_SAMPLES = 500
+        private const val TARGET_SAMPLES = 1000
+        private const val RECENT_SAMPLE_SIZE = 100
+        
+        // Calibration thresholds
+        private const val EARTH_FIELD_STRENGTH = 50f // μT
+        private const val EARTH_FIELD_TOLERANCE = 20f // μT
+        private const val DRIFT_THRESHOLD = 10f // μT
+        private const val SEVERE_DRIFT_THRESHOLD = 25f // μT
+        private const val SENSOR_SATURATION_THRESHOLD = 2000f // μT
+        private const val NOISE_THRESHOLD = 5f // μT
+    }
+}
+
+/**
+ * Calibration error information
+ */
+data class CalibrationError(
+    val type: ErrorType,
+    val magnitude: Float,
+    val message: String
+)
+
+enum class ErrorType {
+    SEVERE_DRIFT,
+    SENSOR_SATURATION,
+    HIGH_NOISE,
+    CALIBRATION_FAILED
+}
+
+/**
+ * Calibration statistics
+ */
+data class CalibrationStats(
+    val isValid: Boolean,
+    val timestamp: Long,
+    val quality: Float,
+    val driftOffset: Vector3,
+    val driftRate: Vector3,
+    val autoCalibrationEnabled: Boolean,
+    val lastError: CalibrationError?
+)
+
+// Extension functions
+private fun List<Vector3>.average(): Vector3 {
+    if (isEmpty()) return Vector3.ZERO
+    
+    val sumX = sumOf { it.x }
+    val sumY = sumOf { it.y }
+    val sumZ = sumOf { it.z }
+    
+    return Vector3(sumX / size, sumY / size, sumZ / size)
+}

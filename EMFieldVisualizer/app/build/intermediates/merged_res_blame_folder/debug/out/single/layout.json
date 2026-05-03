@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-mergeDebugResources-47:\\layout\\fragment_visualization.xml",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\fragment_visualization.xml"
+    },
+    {
+        "merged": "com.emfield.visualizer.app-mergeDebugResources-47:/layout/fragment_visualization.xml",
+        "source": "com.emfield.visualizer.app-main-50:/layout/fragment_visualization.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-mergeDebugResources-47:\\layout\\activity_main.xml",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\activity_main.xml"
+    },
+    {
+        "merged": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-mergeDebugResources-47:\\layout\\fragment_scan.xml",
+        "source": "C:\\Users\\tharu\\.gradle\\daemon\\8.2\\com.emfield.visualizer.app-main-50:\\layout\\fragment_scan.xml"
+    }
+]
